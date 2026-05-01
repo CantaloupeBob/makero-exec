@@ -17,8 +17,21 @@ export const apiWallets = pgTable(
     userAddress: text("user_address").notNull(),
     /** The generated API wallet public address (agent wallet) — unique per keypair */
     apiWalletAddress: text("api_wallet_address").primaryKey(),
-    /** Encrypted private key of the API wallet — used to sign orders on behalf of the user */
-    privateKey: text("private_key").notNull(),
+    /**
+     * Envelope-encrypted private key of the API wallet.
+     *
+     * Stored as: AEAD(plaintext PK, DEK, valueNonce). The DEK itself is
+     * AEAD-encrypted under the server's MASTER_KEY (see `encryptedDek` /
+     * `dekNonce`). All four columns are required and base64-encoded.
+     * Plaintext is never persisted nor logged. See `src/lib/crypto.ts`.
+     */
+    encryptedPrivateKey: text("encrypted_private_key").notNull(),
+    /** 24-byte random nonce used to encrypt `encryptedPrivateKey` (base64). */
+    privateKeyNonce: text("private_key_nonce").notNull(),
+    /** The per-record DEK, AEAD-encrypted under the master key (base64). */
+    encryptedDek: text("encrypted_dek").notNull(),
+    /** 24-byte random nonce used to wrap the DEK (base64). */
+    dekNonce: text("dek_nonce").notNull(),
     /** Auto-generated name: {userAddress}-{n} */
     name: text("name").notNull(),
     createdAt: timestamp("created_at").defaultNow().notNull(),

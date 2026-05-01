@@ -8,6 +8,7 @@ import {
 } from "../event-bus/event-bus.ts";
 import type { ProbabilityExtractor } from "./probability-extractor.ts";
 import type { LoadedStrategy } from "./types.ts";
+import { initCrypto } from "../lib/crypto.ts";
 
 export interface StrategyEngineOptions {
   readonly bus: EventBus;
@@ -43,6 +44,9 @@ export class StrategyEngine {
     this.bus = opts.bus;
     this.extractor = opts.extractor;
     this.fireOnce = opts.fireOnce ?? true;
+
+    // Initializes cryptographic decoding of api wallets
+    initCrypto();
   }
 
   // ---------------------------------------------------------------------------
