@@ -25,6 +25,11 @@ import {
   StrategyEngine,
   YesTokenResolver,
 } from "./strategy/index.ts";
+import {
+  ApiWalletLoader,
+  HyperliquidVenue,
+  StrategyExecutor,
+} from "./execution/index.ts";
 
 const CLOB_HOST = process.env.CLOB_HOST ?? "https://clob.polymarket.com";
 
@@ -141,6 +146,18 @@ async function main() {
     );
   });
 
+  // ---- 2c. Strategy executor ------------------------------------------------
+  // Subscribes to `strategy.*` and routes triggered strategies to the
+  // appropriate venue. Today we only have Hyperliquid; new venues plug in
+  // here by implementing the `Venue` interface and registering below.
+  const walletLoader = new ApiWalletLoader();
+  const hyperliquidVenue = new HyperliquidVenue({ walletLoader });
+  const executor = new StrategyExecutor({
+    bus,
+    venues: [hyperliquidVenue],
+  });
+  executor.start();
+
   // ---- 3. Discover triggers from DB and register subscriptions --------------
   const triggers = await loadAllTriggerKeys();
   console.log(
@@ -191,6 +208,7 @@ async function main() {
     try {
       engine.stop();
       bookSync.stop();
+      executor.stop();
       await manager.stop();
       await closeDb();
     } finally {

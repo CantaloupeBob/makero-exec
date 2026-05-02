@@ -81,6 +81,8 @@ export const strategies = pgTable(
     triggerProbability: real("trigger_probability").notNull(),
     /** Trigger direction: ">=" or "<=" */
     triggerDirection: text("trigger_direction").notNull(),
+    /** Has the executor attempted to execute this strategy */
+    hasBeenAttempted: boolean("has_been_attempted").notNull().default(false),
     /** Nonce used for the signed create message */
     createNonce: text("create_nonce").notNull(),
     createdAt: timestamp("created_at").defaultNow().notNull(),
