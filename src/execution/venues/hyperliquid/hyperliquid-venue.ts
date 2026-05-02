@@ -51,8 +51,13 @@ export class HyperliquidVenue implements Venue {
   private readonly walletLoader: ApiWalletLoader;
   private readonly assetResolver: HyperliquidAssetResolver;
   private readonly slippage: number;
-  /** Per-user ExchangeClient cache — keyed by lowercased master address. */
-  private readonly clients = new Map<string, ExchangeClient>();
+  /** Per-user ExchangeClient cache — keyed by lowercased master address.
+   *  The account object is stored alongside so we can detect if the wallet
+   *  loader has returned a different account (key rotation) and rebuild. */
+  private readonly clients = new Map<
+    string,
+    { account: PrivateKeyAccount; client: ExchangeClient }
+  >();
 
   constructor(opts: HyperliquidVenueOptions) {
     this.transport = opts.transport ?? defaultHyperliquidTransport();
@@ -67,9 +72,10 @@ export class HyperliquidVenue implements Venue {
   ): Promise<readonly OrderExecutionResult[]> {
     if (orders.length === 0) return [];
 
-    // All orders in a strategy share a single user, but be defensive — the
-    // executor batches by strategy, not by user.
-    const userAddress = orders[0]!.userAddress;
+    // Use the authoritative userAddress from the triggering event, not from
+    // orders[0] — the event is the verified source of truth and avoids a
+    // potential panic when the orders slice is empty or cross-user.
+    const userAddress = cause.userAddress;
     let client: ExchangeClient;
     try {
       client = await this.getClient(userAddress);
@@ -103,14 +109,16 @@ export class HyperliquidVenue implements Venue {
 
   private async getClient(userAddress: string): Promise<ExchangeClient> {
     const key = userAddress.toLowerCase();
-    const cached = this.clients.get(key);
-    if (cached) return cached;
+    // Always load through ApiWalletLoader so we pick up any account change
+    // (e.g. future key rotation) rather than blindly serving a stale client.
     const wallet: PrivateKeyAccount = await this.walletLoader.load(userAddress);
+    const cached = this.clients.get(key);
+    if (cached && cached.account === wallet) return cached.client;
     const client = new ExchangeClient({
       transport: this.transport,
       wallet,
     });
-    this.clients.set(key, client);
+    this.clients.set(key, { account: wallet, client });
     return client;
   }
 
@@ -138,6 +146,10 @@ export class HyperliquidVenue implements Venue {
       szDecimals,
       this.slippage,
     );
+    // Numeric entry price used as the reference for TP/SL percentage calculations.
+    // Must be derived from the formatted string so it matches the exact price
+    // sent to the exchange (formatPrice applies rounding / sig-fig rules).
+    const entryPxNum = Number(entryPx);
     const sz = sizeFromUsdcNotional(order.sizeUsdc, mid, szDecimals);
 
     // Best-effort leverage update. Failing here shouldn't block the order
@@ -168,56 +180,46 @@ export class HyperliquidVenue implements Venue {
     ];
 
     if (order.takeProfitPct !== null) {
+      const tpPx = triggerPriceFromPct(
+        entryPxNum,
+        order.takeProfitPct,
+        order.isLong,
+        "tp",
+        szDecimals,
+      );
       orderLegs.push({
         a: assetId,
         b: !order.isLong, // closing leg flips side
-        p: triggerPriceFromPct(
-          mid,
-          order.takeProfitPct,
-          order.isLong,
-          "tp",
-          szDecimals,
-        ),
+        p: tpPx,
         s: sz,
         r: true,
         t: {
           trigger: {
             isMarket: true,
-            triggerPx: triggerPriceFromPct(
-              mid,
-              order.takeProfitPct,
-              order.isLong,
-              "tp",
-              szDecimals,
-            ),
+            triggerPx: tpPx,
             tpsl: "tp",
           },
         },
       });
     }
     if (order.stopLossPct !== null) {
+      const slPx = triggerPriceFromPct(
+        entryPxNum,
+        order.stopLossPct,
+        order.isLong,
+        "sl",
+        szDecimals,
+      );
       orderLegs.push({
         a: assetId,
         b: !order.isLong,
-        p: triggerPriceFromPct(
-          mid,
-          order.stopLossPct,
-          order.isLong,
-          "sl",
-          szDecimals,
-        ),
+        p: slPx,
         s: sz,
         r: true,
         t: {
           trigger: {
             isMarket: true,
-            triggerPx: triggerPriceFromPct(
-              mid,
-              order.stopLossPct,
-              order.isLong,
-              "sl",
-              szDecimals,
-            ),
+            triggerPx: slPx,
             tpsl: "sl",
           },
         },
