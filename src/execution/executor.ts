@@ -5,6 +5,7 @@ import type {
   Unsubscribe,
 } from "../event-bus/event-bus.ts";
 import {
+  hasStrategyBeenAttempted,
   loadPendingOrdersForStrategy,
   markOrderStatus,
   markStrategyAttempted,
@@ -87,6 +88,13 @@ export class StrategyExecutor {
   }
 
   private async dispatch(cause: StrategyTriggeredEvent): Promise<void> {
+    if (await hasStrategyBeenAttempted(cause.strategyId)) {
+      console.warn(
+        `[exec] strategy ${cause.strategyId} has already been attempted — skipping`,
+      );
+      return;
+    }
+
     const venue = this.route(cause, this.venues);
     if (!venue) {
       console.warn(
@@ -100,7 +108,7 @@ export class StrategyExecutor {
       console.warn(
         `[exec] strategy ${cause.strategyId} fired but has no pending orders`,
       );
-      // Still flip the flag — the strategy fired, the executor ran, and
+      // Still flip the flag — the strategy fired, the executor rxan, and
       // there is nothing left to do. Leaving it false would make the row
       // look perpetually pending to any auditor.
       await markStrategyAttempted(cause.strategyId);

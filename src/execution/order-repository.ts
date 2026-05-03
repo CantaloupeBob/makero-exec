@@ -107,3 +107,15 @@ export async function markStrategyAttempted(strategyId: string): Promise<void> {
     );
   }
 }
+
+export async function hasStrategyBeenAttempted(
+  strategyId: string,
+): Promise<boolean> {
+  const db = getDb();
+  const rows = await db
+    .select({ hasBeenAttempted: strategies.hasBeenAttempted })
+    .from(strategies)
+    .where(eq(strategies.id, strategyId))
+    .limit(1);
+  return rows.length > 0 && rows[0]!.hasBeenAttempted;
+}
