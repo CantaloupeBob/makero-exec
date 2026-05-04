@@ -146,11 +146,13 @@ export class HyperliquidVenue implements Venue {
       szDecimals,
       this.slippage,
     );
-    // Numeric entry price used as the reference for TP/SL percentage calculations.
-    // Must be derived from the formatted string so it matches the exact price
-    // sent to the exchange (formatPrice applies rounding / sig-fig rules).
-    const entryPxNum = Number(entryPx);
-    const sz = sizeFromUsdcNotional(order.sizeUsdc, mid, szDecimals);
+    // Size is calculated from the aggressive limit price (not raw mid) so the
+    // notional on the wire matches what the user intended at the fill price.
+    const sz = sizeFromUsdcNotional(
+      order.sizeUsdc,
+      Number(entryPx),
+      szDecimals,
+    );
 
     // Best-effort leverage update. Failing here shouldn't block the order
     // — the user already has *some* leverage configured server-side and
@@ -179,64 +181,11 @@ export class HyperliquidVenue implements Venue {
       },
     ];
 
-    if (order.takeProfitPct !== null) {
-      const tpPx = triggerPriceFromPct(
-        entryPxNum,
-        order.takeProfitPct,
-        order.isLong,
-        "tp",
-        szDecimals,
-      );
-      orderLegs.push({
-        a: assetId,
-        b: !order.isLong, // closing leg flips side
-        p: tpPx,
-        s: sz,
-        r: true,
-        t: {
-          trigger: {
-            isMarket: true,
-            triggerPx: tpPx,
-            tpsl: "tp",
-          },
-        },
-      });
-    }
-    if (order.stopLossPct !== null) {
-      const slPx = triggerPriceFromPct(
-        entryPxNum,
-        order.stopLossPct,
-        order.isLong,
-        "sl",
-        szDecimals,
-      );
-      orderLegs.push({
-        a: assetId,
-        b: !order.isLong,
-        p: slPx,
-        s: sz,
-        r: true,
-        t: {
-          trigger: {
-            isMarket: true,
-            triggerPx: slPx,
-            tpsl: "sl",
-          },
-        },
-      });
-    }
+    // Phase 1: submit entry IOC only.
+    const entryResp = await client.order({ orders: orderLegs, grouping: "na" });
+    const entryStatuses = entryResp.response.data.statuses;
+    const entryStatus = entryStatuses[0];
 
-    const grouping: "na" | "positionTpsl" =
-      orderLegs.length > 1 ? "positionTpsl" : "na";
-
-    const resp = await client.order({ orders: orderLegs, grouping });
-
-    // Inspect the entry status (always the first leg) to map onto our
-    // execution-result enum. Errors on TP/SL legs are logged but don't
-    // fail the order — the position is open and the user has a partial
-    // safety net.
-    const statuses = resp.response.data.statuses;
-    const entryStatus = statuses[0];
     if (entryStatus === undefined) {
       return {
         status: "failed",
@@ -245,49 +194,135 @@ export class HyperliquidVenue implements Venue {
       };
     }
 
-    for (let i = 1; i < statuses.length; i++) {
-      const s = statuses[i];
-      if (s !== undefined && typeof s !== "string" && "error" in s) {
-        console.warn(
-          `[hyperliquid] order ${order.id} TP/SL leg ${i} rejected: ${s.error}`,
-        );
-      }
-    }
-
-    if (typeof entryStatus !== "string" && "filled" in entryStatus) {
-      console.log(
-        `[hyperliquid] order ${order.id} FILLED ` +
-          `${order.isLong ? "LONG" : "SHORT"} ${order.asset} ` +
-          `${entryStatus.filled.totalSz}@${entryStatus.filled.avgPx} ` +
-          `(strategy=${cause.strategyId})`,
+    // IOC order returned "resting" means zero fill — the order was immediately
+    // cancelled because it couldn't fill at the limit price. The position was
+    // never opened. Treat this as skipped, not submitted.
+    if (typeof entryStatus !== "string" && "resting" in entryStatus) {
+      console.warn(
+        `[hyperliquid] order ${order.id} IOC missed (resting) — no fill, ` +
+          `asset=${order.asset} side=${order.isLong ? "LONG" : "SHORT"} ` +
+          `entryPx=${entryPx} mid=${mid}`,
       );
       return {
-        status: "filled",
+        status: "skipped",
         orderId: order.id,
-        venueRef: String(entryStatus.filled.oid),
+        reason: "ioc_no_fill",
       };
     }
-    if (typeof entryStatus !== "string" && "resting" in entryStatus) {
-      return {
-        status: "resting",
-        orderId: order.id,
-        venueRef: String(entryStatus.resting.oid),
-      };
-    }
-    if (
-      typeof entryStatus !== "string" &&
-      "error" in (entryStatus as Record<string, unknown>)
-    ) {
+
+    if (typeof entryStatus !== "string" && "error" in entryStatus) {
       return {
         status: "failed",
         orderId: order.id,
         error: (entryStatus as { error: string }).error,
       };
     }
+
+    if (typeof entryStatus === "string" || !("filled" in entryStatus)) {
+      // Unknown status variant — surface as submitted, no TP/SL.
+      return {
+        status: "submitted",
+        orderId: order.id,
+        venueRef: typeof entryStatus === "string" ? entryStatus : undefined,
+      };
+    }
+
+    // Phase 2: entry confirmed filled. Use actual fill price and size for TP/SL
+    // so the closing legs are sized correctly and reference the real entry price.
+    const fillPx = Number(entryStatus.filled.avgPx);
+    const fillSz = entryStatus.filled.totalSz;
+    console.log(
+      `[hyperliquid] order ${order.id} FILLED ` +
+        `${order.isLong ? "LONG" : "SHORT"} ${order.asset} ` +
+        `${fillSz}@${entryStatus.filled.avgPx} ` +
+        `(strategy=${cause.strategyId})`,
+    );
+
+    const hasTP = order.takeProfitPct !== null;
+    const hasSL = order.stopLossPct !== null;
+    if (hasTP || hasSL) {
+      const tpslLegs: OrderParameters["orders"] = [];
+
+      if (hasTP) {
+        const tpPx = triggerPriceFromPct(
+          fillPx,
+          order.takeProfitPct!,
+          order.isLong,
+          "tp",
+          szDecimals,
+        );
+        tpslLegs.push({
+          a: assetId,
+          b: !order.isLong,
+          p: tpPx,
+          s: fillSz,
+          r: true,
+          t: { trigger: { isMarket: true, triggerPx: tpPx, tpsl: "tp" } },
+        });
+      }
+      if (hasSL) {
+        const slPx = triggerPriceFromPct(
+          fillPx,
+          order.stopLossPct!,
+          order.isLong,
+          "sl",
+          szDecimals,
+        );
+        tpslLegs.push({
+          a: assetId,
+          b: !order.isLong,
+          p: slPx,
+          s: fillSz,
+          r: true,
+          t: { trigger: { isMarket: true, triggerPx: slPx, tpsl: "sl" } },
+        });
+      }
+
+      try {
+        const tpslResp = await client.order({
+          orders: tpslLegs,
+          grouping: "positionTpsl",
+        });
+        // Check every leg individually. A partially-rejected response (e.g. SL
+        // accepted but TP rejected, or vice-versa) still leaves the position
+        // unprotected and must be surfaced the same way as a full throw.
+        let anyLegFailed = false;
+        for (const [i, s] of tpslResp.response.data.statuses.entries()) {
+          if (s !== undefined && typeof s !== "string" && "error" in s) {
+            console.error(
+              `[hyperliquid] order ${order.id} TP/SL leg ${i} REJECTED ` +
+                `(position IS open at ${fillPx}): ${(s as { error: string }).error}`,
+            );
+            anyLegFailed = true;
+          }
+        }
+        if (anyLegFailed) {
+          return {
+            status: "filled_unprotected",
+            orderId: order.id,
+            venueRef: String(entryStatus.filled.oid),
+          };
+        }
+      } catch (err) {
+        // TP/SL placement failed entirely — return a distinct status so the
+        // executor can log it prominently and operators can act immediately.
+        console.error(
+          `[hyperliquid] order ${order.id} TP/SL submission threw ` +
+            `(position IS open at ${fillPx}): ` +
+            `${err instanceof Error ? err.message : err}`,
+        );
+        return {
+          status: "filled_unprotected",
+          orderId: order.id,
+          venueRef: String(entryStatus.filled.oid),
+        };
+      }
+    }
+
     return {
-      status: "submitted",
+      status: "filled",
       orderId: order.id,
-      venueRef: typeof entryStatus === "string" ? entryStatus : undefined,
+      venueRef: String(entryStatus.filled.oid),
     };
   }
 }

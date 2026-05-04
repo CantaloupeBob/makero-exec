@@ -1,5 +1,6 @@
 import { strategies } from "../db/schema.ts";
 import { getDb } from "../db/client.ts";
+import { eq, gt, and } from "drizzle-orm";
 import { parseTriggerKey } from "../wss/triggers/trigger-key.ts";
 import {
   StrategyParseError,
@@ -12,6 +13,21 @@ import {
  * the in-memory representation. Malformed rows are logged + skipped so a
  * single bad row cannot prevent startup.
  */
+/**
+ * Return the set of strategy IDs that have already been attempted by the
+ * executor. Used at boot to skip re-arming strategies that have already
+ * fired, preventing the engine from re-emitting on every WSS tick after
+ * a restart where probability is still above threshold.
+ */
+export async function loadAttemptedStrategyIds(): Promise<Set<string>> {
+  const db = getDb();
+  const rows = await db
+    .select({ id: strategies.id })
+    .from(strategies)
+    .where(eq(strategies.hasBeenAttempted, true));
+  return new Set(rows.map((r) => r.id));
+}
+
 export async function loadAllStrategies(): Promise<LoadedStrategy[]> {
   const db = getDb();
   const rows = await db
@@ -22,9 +38,52 @@ export async function loadAllStrategies(): Promise<LoadedStrategy[]> {
       triggerSource: strategies.triggerSource,
       triggerProbability: strategies.triggerProbability,
       triggerDirection: strategies.triggerDirection,
+      createdAt: strategies.createdAt,
     })
     .from(strategies);
+  return parseStrategyRows(rows);
+}
 
+/**
+ * Load strategies created after `since` that have not yet been attempted.
+ * Used by the polling loop to pick up strategies armed after boot without
+ * a full table scan on every tick.
+ */
+export async function loadNewStrategies(
+  since: Date,
+): Promise<LoadedStrategy[]> {
+  const db = getDb();
+  const rows = await db
+    .select({
+      id: strategies.id,
+      userAddress: strategies.userAddress,
+      name: strategies.strategyName,
+      triggerSource: strategies.triggerSource,
+      triggerProbability: strategies.triggerProbability,
+      triggerDirection: strategies.triggerDirection,
+      createdAt: strategies.createdAt,
+    })
+    .from(strategies)
+    .where(
+      and(
+        gt(strategies.createdAt, since),
+        eq(strategies.hasBeenAttempted, false),
+      ),
+    );
+  return parseStrategyRows(rows);
+}
+
+function parseStrategyRows(
+  rows: Array<{
+    id: string;
+    userAddress: string;
+    name: string;
+    triggerSource: string;
+    triggerProbability: number;
+    triggerDirection: string;
+    createdAt: Date;
+  }>,
+): LoadedStrategy[] {
   const out: LoadedStrategy[] = [];
   for (const row of rows) {
     try {
@@ -46,6 +105,7 @@ function toLoadedStrategy(row: {
   triggerSource: string;
   triggerProbability: number;
   triggerDirection: string;
+  createdAt: Date;
 }): LoadedStrategy {
   const trigger = parseTriggerKey(row.triggerSource);
 

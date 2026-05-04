@@ -19,6 +19,7 @@ import { SymbolConverter } from "@nktkas/hyperliquid/utils";
 export class HyperliquidAssetResolver {
   private converter: SymbolConverter | null = null;
   private converterReady: Promise<SymbolConverter> | null = null;
+  private converterFetchedAt = 0;
   private readonly info: InfoClient;
   private midsCache: {
     fetchedAt: number;
@@ -30,19 +31,44 @@ export class HyperliquidAssetResolver {
     private readonly transport: IRequestTransport,
     /** Cap on how stale a cached mid can be before we refetch. */
     private readonly midTtlMs: number = 1_000,
+    /**
+     * How long to trust the SymbolConverter's asset list before re-fetching.
+     * Hyperliquid occasionally adds/modifies assets; a stale list would cause
+     * wrong szDecimals and malformed orders. Defaults to 1 hour.
+     */
+    private readonly converterTtlMs: number = 60 * 60_000,
   ) {
     this.info = new InfoClient({ transport });
   }
 
   private getConverter(): Promise<SymbolConverter> {
-    if (this.converter) return Promise.resolve(this.converter);
+    const now = Date.now();
+    // Serve from cache only if still within TTL.
+    if (this.converter && now - this.converterFetchedAt < this.converterTtlMs) {
+      return Promise.resolve(this.converter);
+    }
+    // Don't start a second in-flight fetch if one is already running.
     if (this.converterReady) return this.converterReady;
     this.converterReady = SymbolConverter.create({
       transport: this.transport,
-    }).then((c) => {
-      this.converter = c;
-      return c;
-    });
+    })
+      .then((c) => {
+        this.converter = c;
+        this.converterFetchedAt = Date.now();
+        this.converterReady = null;
+        return c;
+      })
+      .catch((err) => {
+        // On failure keep the stale converter (if any) rather than going dark.
+        this.converterReady = null;
+        if (this.converter) {
+          console.warn(
+            `[asset-resolver] failed to refresh SymbolConverter, using stale data: ${err instanceof Error ? err.message : err}`,
+          );
+          return this.converter;
+        }
+        throw err;
+      });
     return this.converterReady;
   }
 

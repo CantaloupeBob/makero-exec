@@ -36,6 +36,17 @@ export type OrderExecutionResult =
       readonly venueRef?: string;
     }
   | {
+      /**
+       * Entry filled but the subsequent TP/SL submission failed entirely.
+       * The position IS open on-chain with no protective orders.
+       * Treated as `isExecuted: true` so the order is not re-attempted, but
+       * the distinct status makes it auditable and alertable.
+       */
+      readonly status: "filled_unprotected";
+      readonly orderId: string;
+      readonly venueRef?: string;
+    }
+  | {
       readonly status: "skipped";
       readonly orderId: string;
       readonly reason: string;

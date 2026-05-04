@@ -1,7 +1,35 @@
-import { eq, and } from "drizzle-orm";
+import { eq, and, gt } from "drizzle-orm";
 import { getDb } from "../db/client.ts";
 import { orders, strategies } from "../db/schema.ts";
 import type { ExecutableOrder } from "./types.ts";
+
+/**
+ * Hard cap on a single order's USDC notional. Read from the environment so
+ * operators can configure it without a code change. Defaults to $10,000.
+ * A DB value larger than this is rejected at load time, not at execution time,
+ * so the strategy is skipped cleanly rather than attempting a partial batch.
+ */
+export const MAX_ORDER_USDC: number = (() => {
+  const raw = process.env.MAX_ORDER_USDC;
+  if (!raw) return 10_000;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) {
+    throw new Error(`MAX_ORDER_USDC env var "${raw}" is not a positive number`);
+  }
+  return n;
+})();
+
+export interface LoadPendingOrdersResult {
+  /** Orders that passed all validation checks and are ready to execute. */
+  readonly orders: ExecutableOrder[];
+  /**
+   * True if rows existed in the DB for this strategy but every one was
+   * rejected by a validation guard (oversized, invalid size, etc.).
+   * When true and `orders` is empty the strategy should NOT be silently
+   * latched as attempted — an operator needs to investigate.
+   */
+  readonly allFiltered: boolean;
+}
 
 /**
  * Load the pending, not-yet-executed orders for a strategy. We deliberately
@@ -12,7 +40,7 @@ import type { ExecutableOrder } from "./types.ts";
  */
 export async function loadPendingOrdersForStrategy(
   strategyId: string,
-): Promise<ExecutableOrder[]> {
+): Promise<LoadPendingOrdersResult> {
   const db = getDb();
   const rows = await db
     .select()
@@ -22,16 +50,26 @@ export async function loadPendingOrdersForStrategy(
         eq(orders.strategyId, strategyId),
         eq(orders.isExecuted, false),
         eq(orders.status, "pending"),
+        gt(orders.orderDeadline, new Date()),
       ),
     );
 
   const out: ExecutableOrder[] = [];
+  let rejectedCount = 0;
   for (const row of rows) {
     const sizeUsdc = Number(row.sizeUsdc);
     if (!Number.isFinite(sizeUsdc) || sizeUsdc <= 0) {
       console.warn(
         `[exec] order ${row.id} has invalid size_usdc="${row.sizeUsdc}" — skipping`,
       );
+      rejectedCount++;
+      continue;
+    }
+    if (sizeUsdc > MAX_ORDER_USDC) {
+      console.error(
+        `[exec] order ${row.id} size_usdc=${sizeUsdc} exceeds MAX_ORDER_USDC=${MAX_ORDER_USDC} — skipping`,
+      );
+      rejectedCount++;
       continue;
     }
     const tp =
@@ -56,7 +94,11 @@ export async function loadPendingOrdersForStrategy(
       orderDeadline: row.orderDeadline.getTime(),
     });
   }
-  return out;
+  return {
+    orders: out,
+    allFiltered:
+      rows.length > 0 && out.length === 0 && rejectedCount === rows.length,
+  };
 }
 
 /**
@@ -66,7 +108,7 @@ export async function loadPendingOrdersForStrategy(
  */
 export async function markOrderStatus(
   orderId: string,
-  status: "submitted" | "filled" | "failed" | "skipped",
+  status: "submitted" | "filled" | "filled_unprotected" | "failed" | "skipped",
   isExecuted: boolean,
 ): Promise<void> {
   const db = getDb();
@@ -93,19 +135,20 @@ export async function markOrderStatus(
  * Best-effort: failing to flip the flag is logged but never thrown,
  * because the on-venue side effects have already happened.
  */
+/**
+ * Mark a strategy as having been attempted. This MUST succeed before the
+ * executor calls the venue — if the DB write fails we throw so the caller
+ * aborts rather than executing a trade that cannot be latched, which would
+ * result in a double-execution on the next restart.
+ *
+ * The method is intentionally NOT best-effort.
+ */
 export async function markStrategyAttempted(strategyId: string): Promise<void> {
   const db = getDb();
-  try {
-    await db
-      .update(strategies)
-      .set({ hasBeenAttempted: true })
-      .where(eq(strategies.id, strategyId));
-  } catch (err) {
-    console.error(
-      `[exec] failed to mark strategy ${strategyId} as attempted:`,
-      err instanceof Error ? err.message : err,
-    );
-  }
+  await db
+    .update(strategies)
+    .set({ hasBeenAttempted: true })
+    .where(eq(strategies.id, strategyId));
 }
 
 export async function hasStrategyBeenAttempted(

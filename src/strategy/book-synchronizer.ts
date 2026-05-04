@@ -96,18 +96,45 @@ export class BookSynchronizer {
   private started = false;
   private stopped = false;
 
+  /**
+   * Resolves once every asset that was tracked *before* `start()` has
+   * received its first REST baseline. Await this before enabling WSS → engine
+   * forwarding to eliminate the cold-book startup race.
+   */
+  readonly warmupComplete: Promise<void>;
+  private warmupResolve!: () => void;
+  private warmupBaselines = new Set<string>();
+  private warmupPending = new Set<string>();
+
   constructor(
     private readonly store: BookStore,
     private readonly resyncer: BookResyncer,
     opts: Partial<BookSynchronizerOptions> = {},
   ) {
     this.opts = { ...DEFAULT_SYNCHRONIZER_OPTIONS, ...opts };
+    this.warmupComplete = new Promise<void>((resolve) => {
+      this.warmupResolve = resolve;
+    });
   }
 
   start(): void {
     if (this.stopped || this.started) return;
     this.started = true;
-    for (const assetId of this.tracked) this.armTimer(assetId);
+    // Snapshot which assets need a baseline before warmup is complete.
+    // Assets tracked after start() are armed immediately and don't block warmup.
+    if (this.tracked.size === 0) {
+      // Nothing to warm up — resolve immediately.
+      this.warmupResolve();
+    } else {
+      this.warmupPending = new Set(this.tracked);
+    }
+    for (const assetId of this.tracked) {
+      // Fire an immediate baseline fetch for each pre-tracked asset so the
+      // warmupComplete promise can resolve. armTimer only sets up the periodic
+      // cadence — it does not fetch on its own.
+      void this.requestResync(assetId, "manual");
+      this.armTimer(assetId);
+    }
   }
 
   stop(): void {
@@ -128,9 +155,11 @@ export class BookSynchronizer {
     if (this.tracked.has(assetId)) return;
     this.tracked.add(assetId);
     if (this.started && !this.stopped) {
+      // Asset added after start — kick off its baseline but don't block warmup.
       void this.requestResync(assetId, "manual");
       this.armTimer(assetId);
     }
+    // If not yet started, it will be picked up by start() and included in warmupPending.
   }
 
   /** Stop tracking. Idempotent. Local book state is preserved. */
@@ -201,8 +230,25 @@ export class BookSynchronizer {
   }
 
   private async doResync(assetId: string, reason: ResyncReason): Promise<void> {
+    const startedAt = Date.now();
+    if (reason !== "periodic") {
+      console.log(`[book-sync] starting REST fetch for ${assetId} (${reason})`);
+    }
     try {
       const fresh = await this.resyncer.resync(assetId);
+      const elapsedMs = Date.now() - startedAt;
+      if (reason !== "periodic") {
+        console.log(
+          `[book-sync] REST fetch complete for ${assetId} (${reason}) — ` +
+            `bids=${fresh.bids.length} asks=${fresh.asks.length} hash=${fresh.hash ?? "none"} elapsed=${elapsedMs}ms`,
+        );
+      }
+      if (fresh.bids.length === 0 && fresh.asks.length === 0) {
+        console.warn(
+          `[book-sync] REST snapshot for ${assetId} returned empty book — ` +
+            `warmup will still resolve but book has no depth`,
+        );
+      }
       this.store.replaceFromSnapshot(
         assetId,
         fresh.bids,
@@ -216,9 +262,22 @@ export class BookSynchronizer {
         );
       }
     } catch (err) {
+      const elapsedMs = Date.now() - startedAt;
       console.warn(
-        `[book-sync] resync failed for ${assetId} (${reason}): ${err instanceof Error ? err.message : err}`,
+        `[book-sync] REST fetch FAILED for ${assetId} (${reason}) elapsed=${elapsedMs}ms: ` +
+          `${err instanceof Error ? err.message : err}`,
       );
+    } finally {
+      // Tick off warmup regardless of success/failure — a failed baseline is
+      // still "attempted". The suspect-book hook will trigger a resync if the
+      // book is bad when the first tick arrives.
+      if (this.warmupPending.size > 0) {
+        this.warmupPending.delete(assetId);
+        this.warmupBaselines.add(assetId);
+        if (this.warmupPending.size === 0) {
+          this.warmupResolve();
+        }
+      }
     }
   }
 }

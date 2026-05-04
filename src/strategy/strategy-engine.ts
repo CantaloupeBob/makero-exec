@@ -8,7 +8,6 @@ import {
 } from "../event-bus/event-bus.ts";
 import type { ProbabilityExtractor } from "./probability-extractor.ts";
 import type { LoadedStrategy } from "./types.ts";
-import { initCrypto } from "../lib/crypto.ts";
 
 export interface StrategyEngineOptions {
   readonly bus: EventBus;
@@ -20,6 +19,18 @@ export interface StrategyEngineOptions {
    * remain armed (out of scope here).
    */
   readonly fireOnce?: boolean;
+  /**
+   * Called after a strategy fires AND is removed from the index (fireOnce only).
+   * Receives the fired strategy and the triggerId of the bucket it belonged to,
+   * plus a boolean indicating whether that trigger now has zero remaining strategies.
+   * Use this to clean up WSS subscriptions and book tracking when a market is
+   * no longer needed.
+   */
+  readonly onStrategyFired?: (
+    strategy: LoadedStrategy,
+    triggerId: string,
+    triggerNowEmpty: boolean,
+  ) => void;
 }
 
 /**
@@ -35,6 +46,9 @@ export class StrategyEngine {
   private readonly bus: EventBus;
   private readonly extractor: ProbabilityExtractor;
   private readonly fireOnce: boolean;
+  private readonly onStrategyFired: NonNullable<
+    StrategyEngineOptions["onStrategyFired"]
+  > | null;
 
   /** triggerId → strategies keyed by strategyId. */
   private readonly index = new Map<string, Map<string, LoadedStrategy>>();
@@ -44,9 +58,7 @@ export class StrategyEngine {
     this.bus = opts.bus;
     this.extractor = opts.extractor;
     this.fireOnce = opts.fireOnce ?? true;
-
-    // Initializes cryptographic decoding of api wallets
-    initCrypto();
+    this.onStrategyFired = opts.onStrategyFired ?? null;
   }
 
   // ---------------------------------------------------------------------------
@@ -126,6 +138,8 @@ export class StrategyEngine {
       this.fire(strategy, probability, event);
       if (this.fireOnce) {
         this.removeStrategy(strategy.id, strategy.trigger.id);
+        const triggerNowEmpty = !this.index.has(strategy.trigger.id);
+        this.onStrategyFired?.(strategy, strategy.trigger.id, triggerNowEmpty);
       }
     }
   }

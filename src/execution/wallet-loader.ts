@@ -11,25 +11,37 @@ import { decryptSecret } from "../lib/crypto.ts";
  * memory, handed to viem (which keeps it inside the account closure), and
  * never logged or persisted again.
  *
- * The returned account is cached per user — viem accounts are pure value
- * objects, but `privateKeyToAccount` does some non-trivial setup we'd
- * rather not repeat on every trigger. Cache invalidation is intentionally
- * absent: rotating an API wallet requires a process restart for now.
+ * Accounts are cached per user with a TTL (default 5 minutes). On TTL expiry
+ * the next call re-reads and re-decrypts from DB, picking up any key rotation.
+ * Cache invalidation can also be forced via `invalidate(userAddress)`.
  */
 export class ApiWalletLoader {
-  private readonly cache = new Map<string, PrivateKeyAccount>();
+  private readonly ttlMs: number;
+  private readonly cache = new Map<
+    string,
+    { account: PrivateKeyAccount; loadedAt: number }
+  >();
   private readonly inflight = new Map<string, Promise<PrivateKeyAccount>>();
+
+  constructor(ttlMs: number = 5 * 60_000) {
+    this.ttlMs = ttlMs;
+  }
 
   async load(userAddress: string): Promise<PrivateKeyAccount> {
     const key = userAddress.toLowerCase();
     const cached = this.cache.get(key);
-    if (cached) return cached;
+    if (cached && Date.now() - cached.loadedAt < this.ttlMs) {
+      return cached.account;
+    }
+    // TTL expired or not cached — evict stale entry and re-fetch.
+    if (cached) this.cache.delete(key);
+
     const inflight = this.inflight.get(key);
     if (inflight) return inflight;
 
     const promise = this.fetchAndDecrypt(userAddress)
       .then((account) => {
-        this.cache.set(key, account);
+        this.cache.set(key, { account, loadedAt: Date.now() });
         this.inflight.delete(key);
         return account;
       })
@@ -39,6 +51,11 @@ export class ApiWalletLoader {
       });
     this.inflight.set(key, promise);
     return promise;
+  }
+
+  /** Force-evict a cached wallet. Next call to `load()` will re-read from DB. */
+  invalidate(userAddress: string): void {
+    this.cache.delete(userAddress.toLowerCase());
   }
 
   private async fetchAndDecrypt(
