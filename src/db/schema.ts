@@ -118,6 +118,11 @@ export const orders = pgTable(
     takeProfitPct: numeric("take_profit_pct", { precision: 10, scale: 4 }),
     /** Stop-loss, expressed as percent loss (e.g. 5 = -5%). Nullable. */
     stopLossPct: numeric("stop_loss_pct", { precision: 10, scale: 4 }),
+    /** Max Slippage, exressed as a percent */
+    maxSlippagePct: numeric("max_slippage_pct", {
+      precision: 6,
+      scale: 4,
+    }).notNull(),
     /** Reduce-only flag */
     reduceOnly: boolean("reduce_only").notNull().default(false),
     /** FK to the strategy this order belongs to */

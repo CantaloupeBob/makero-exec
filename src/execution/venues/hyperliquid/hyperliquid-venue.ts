@@ -144,7 +144,7 @@ export class HyperliquidVenue implements Venue {
       mid,
       order.isLong,
       szDecimals,
-      this.slippage,
+      order.maxSlippagePct / 100,
     );
     // Size is calculated from the aggressive limit price (not raw mid) so the
     // notional on the wire matches what the user intended at the fill price.

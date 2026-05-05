@@ -2,6 +2,10 @@ import { eq, and, gt } from "drizzle-orm";
 import { getDb } from "../db/client.ts";
 import { orders, strategies } from "../db/schema.ts";
 import type { ExecutableOrder } from "./types.ts";
+import { DEFAULT_SLIPPAGE } from "./venues/hyperliquid/formatters.ts";
+
+/** DEFAULT_SLIPPAGE expressed as a percent (e.g. 0.005 → 0.5). Used as fallback when maxSlippagePct is absent or invalid. */
+const DEFAULT_SLIPPAGE_PCT = DEFAULT_SLIPPAGE * 100;
 
 /**
  * Hard cap on a single order's USDC notional. Read from the environment so
@@ -80,6 +84,7 @@ export async function loadPendingOrdersForStrategy(
       row.stopLossPct === null || row.stopLossPct === undefined
         ? null
         : Number(row.stopLossPct);
+    const maxSlippagePct = Number(row.maxSlippagePct);
     out.push({
       id: row.id,
       userAddress: row.userAddress,
@@ -90,6 +95,10 @@ export async function loadPendingOrdersForStrategy(
       leverage: row.leverage,
       takeProfitPct: tp !== null && Number.isFinite(tp) ? tp : null,
       stopLossPct: sl !== null && Number.isFinite(sl) ? sl : null,
+      maxSlippagePct:
+        Number.isFinite(maxSlippagePct) && maxSlippagePct > 0
+          ? maxSlippagePct
+          : DEFAULT_SLIPPAGE_PCT,
       reduceOnly: row.reduceOnly,
       orderDeadline: row.orderDeadline.getTime(),
     });

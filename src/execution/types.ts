@@ -19,6 +19,8 @@ export interface ExecutableOrder {
   readonly takeProfitPct: number | null;
   /** Stop-loss, expressed as percent loss (e.g. 5 = -5%). */
   readonly stopLossPct: number | null;
+  /** Max slippage applied to the aggressive IOC entry price, expressed as a percent (e.g. 0.5 = 50 bps). */
+  readonly maxSlippagePct: number;
   readonly reduceOnly: boolean;
   /** Unix ms after which the order is no longer valid. */
   readonly orderDeadline: number;
