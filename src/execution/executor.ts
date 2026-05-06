@@ -9,6 +9,7 @@ import {
   loadPendingOrdersForStrategy,
   markOrderStatus,
   markStrategyAttempted,
+  StrategyAlreadyLatched,
 } from "./order-repository.ts";
 import type { Venue, OrderExecutionResult } from "./types.ts";
 import { notifyDiscord } from "../lib/discord.ts";
@@ -153,6 +154,16 @@ export class StrategyExecutor {
     try {
       await markStrategyAttempted(cause.strategyId);
     } catch (err) {
+      if (err instanceof StrategyAlreadyLatched) {
+        // Lost a CAS race — another handler (or process) is/was already
+        // executing this strategy. Safe no-op: do NOT touch the venue, do NOT
+        // increment the failure counter (this is expected behaviour, not an
+        // infrastructure failure).
+        console.warn(
+          `[exec] strategy ${cause.strategyId} was already latched (CAS race) — skipping`,
+        );
+        return;
+      }
       this.consecutiveFailures++;
       console.error(
         `[exec] ABORTING strategy ${cause.strategyId} — failed to write attempted latch ` +

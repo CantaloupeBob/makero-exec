@@ -188,11 +188,21 @@ export async function notifyDiscord(
 
     const body = JSON.stringify({ embeds: [embed] });
 
-    const response = await fetch(webhookUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body,
-    });
+    // Bound the webhook attempt so a hung Discord endpoint can't accumulate
+    // pending fetches (each strategy execution would otherwise leak one).
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5_000);
+    let response: Response;
+    try {
+      response = await fetch(webhookUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
 
     if (!response.ok) {
       const text = await response.text().catch(() => "<no body>");

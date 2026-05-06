@@ -153,12 +153,42 @@ export async function markOrderStatus(
  *
  * The method is intentionally NOT best-effort.
  */
+/**
+ * Mark a strategy as having been attempted. This MUST succeed before the
+ * executor calls the venue — if the DB write fails we throw so the caller
+ * aborts rather than executing a trade that cannot be latched, which would
+ * result in a double-execution on the next restart.
+ *
+ * Implemented as a compare-and-swap (UPDATE ... WHERE has_been_attempted = false):
+ *   - if the row was already latched (by another process or an earlier in-flight
+ *     handler that lost a race), rowCount === 0 and we throw `StrategyAlreadyLatched`,
+ *   - the caller MUST treat that as "do not execute".
+ */
+export class StrategyAlreadyLatched extends Error {
+  constructor(strategyId: string) {
+    super(`Strategy ${strategyId} was already latched as attempted`);
+    this.name = "StrategyAlreadyLatched";
+  }
+}
+
 export async function markStrategyAttempted(strategyId: string): Promise<void> {
   const db = getDb();
-  await db
+  const result = await db
     .update(strategies)
     .set({ hasBeenAttempted: true })
-    .where(eq(strategies.id, strategyId));
+    .where(
+      and(
+        eq(strategies.id, strategyId),
+        eq(strategies.hasBeenAttempted, false),
+      ),
+    );
+  // node-postgres returns rowCount on the underlying result. Drizzle surfaces it.
+  // If the row was already latched, rowCount will be 0 and we must NOT execute.
+  const rowCount =
+    (result as unknown as { rowCount?: number | null }).rowCount ?? null;
+  if (rowCount === 0) {
+    throw new StrategyAlreadyLatched(strategyId);
+  }
 }
 
 export async function hasStrategyBeenAttempted(

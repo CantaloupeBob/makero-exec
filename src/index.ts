@@ -178,6 +178,13 @@ async function main() {
     loadAllStrategies(),
     loadAttemptedStrategyIds(),
   ]);
+  // Snapshot the poll cursor BEFORE loadAllStrategies completes would be ideal,
+  // but Promise.all timing makes that awkward. Instead capture it here and rely
+  // on POLL_OVERLAP_MS to cover any strategies created between when the SELECT
+  // executed and now. Critically, the cursor is set BEFORE the warmup-await
+  // below, so strategies created during the (up to 30s) warmup window are
+  // picked up by the first poll tick after main() finishes.
+  let lastStrategyPollAt = new Date();
   const unattemptedStrategies = loadedStrategies.filter(
     (s) => !attemptedIds.has(s.id),
   );
@@ -305,7 +312,6 @@ async function main() {
   // only causes redundant but harmless re-checks of already-armed strategies
   // (engine.addStrategy is idempotent — it won't duplicate an armed strategy).
   const POLL_OVERLAP_MS = 10_000;
-  let lastStrategyPollAt = new Date();
   const strategyPollTimer = setInterval(() => {
     const since = new Date(lastStrategyPollAt.getTime() - POLL_OVERLAP_MS);
     // Advance the cursor before awaiting so a slow poll doesn't double-count
