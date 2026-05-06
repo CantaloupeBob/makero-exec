@@ -3,6 +3,7 @@ import { getDb } from "../db/client.ts";
 import { orders, strategies } from "../db/schema.ts";
 import type { ExecutableOrder } from "./types.ts";
 import { DEFAULT_SLIPPAGE } from "./venues/hyperliquid/formatters.ts";
+import { MAX_ORDER_SIZE_USDC } from "../lib/constants/global-constants.ts";
 
 /** DEFAULT_SLIPPAGE expressed as a percent (e.g. 0.005 → 0.5). Used as fallback when maxSlippagePct is absent or invalid. */
 const DEFAULT_SLIPPAGE_PCT = DEFAULT_SLIPPAGE * 100;
@@ -14,7 +15,7 @@ const DEFAULT_SLIPPAGE_PCT = DEFAULT_SLIPPAGE * 100;
  * so the strategy is skipped cleanly rather than attempting a partial batch.
  */
 export const MAX_ORDER_USDC: number = (() => {
-  const raw = process.env.MAX_ORDER_USDC;
+  const raw = MAX_ORDER_SIZE_USDC;
   if (!raw) return 10_000;
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0) {

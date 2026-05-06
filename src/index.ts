@@ -11,8 +11,6 @@ import {
   InMemoryEventBus,
   newEventId,
   wssTopic,
-  type BusEvent,
-  type StrategyTriggeredEvent,
   type WssMarketEvent,
   type WssErrorEvent,
 } from "./event-bus/index.ts";

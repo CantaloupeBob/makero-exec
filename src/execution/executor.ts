@@ -11,6 +11,7 @@ import {
   markStrategyAttempted,
 } from "./order-repository.ts";
 import type { Venue, OrderExecutionResult } from "./types.ts";
+import { notifyDiscord } from "../lib/discord.ts";
 export interface StrategyExecutorOptions {
   readonly bus: EventBus;
   readonly venues: readonly Venue[];
@@ -199,6 +200,14 @@ export class StrategyExecutor {
     }
 
     await Promise.all(results.map((r) => persistResult(r)));
+
+    // Fire-and-forget Discord notification — errors are swallowed inside notifyDiscord.
+    void notifyDiscord({
+      cause,
+      venueName: venue.name,
+      orders: orders.orders,
+      results,
+    });
   }
 }
 

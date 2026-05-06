@@ -1,0 +1,1 @@
+export const MAX_ORDER_SIZE_USDC = 10_000_000;
