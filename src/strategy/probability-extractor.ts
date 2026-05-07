@@ -146,7 +146,10 @@ export class PolymarketProbabilityExtractor implements ProbabilityExtractor {
     }
 
     const mid = applyFilters(bid, ask, this.opts);
-    if (mid === null) return null;
+    if (mid === null) {
+      this.logRejection(yesAssetId, event.trigger.slug, bid, ask);
+      return null;
+    }
 
     if (mid < 0 || mid > 1) {
       this.flag(yesAssetId, "mid-out-of-range");
@@ -170,6 +173,33 @@ export class PolymarketProbabilityExtractor implements ProbabilityExtractor {
 
   private flag(assetId: string, reason: SuspectReason): void {
     if (this.onSuspect) this.onSuspect(assetId, reason);
+  }
+
+  /**
+   * Throttled (1/s/asset) log so we can see when filter settings are
+   * silently dropping every tick — without this, a misconfigured
+   * `maxSpread` or `requireBothSides` causes strategies to never fire
+   * and there's no observable signal anywhere.
+   */
+  private readonly lastRejectLogAt = new Map<string, number>();
+  private logRejection(
+    assetId: string,
+    slug: string,
+    bid: { price: number; size: number } | null,
+    ask: { price: number; size: number } | null,
+  ): void {
+    const now = Date.now();
+    const last = this.lastRejectLogAt.get(assetId) ?? 0;
+    if (now - last < 1000) return;
+    this.lastRejectLogAt.set(assetId, now);
+    const spread = bid && ask ? (ask.price - bid.price).toFixed(4) : "n/a";
+    console.warn(
+      `[extractor] rejected tick for ${slug} — ` +
+        `bid=${bid ? `${bid.price}@${bid.size}` : "∅"} ` +
+        `ask=${ask ? `${ask.price}@${ask.size}` : "∅"} ` +
+        `spread=${spread} (filters: requireBothSides=${this.opts.requireBothSides}, ` +
+        `maxSpread=${this.opts.maxSpread}, minTopSize=${this.opts.minTopSize})`,
+    );
   }
 }
 

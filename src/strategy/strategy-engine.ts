@@ -120,6 +120,27 @@ export class StrategyEngine {
     return this.index.size;
   }
 
+  /**
+   * Snapshot of every armed strategy, flattened. Returns a fresh array so
+   * callers can mutate the engine (e.g. evict deleted strategies) while
+   * iterating. Cheap: O(n) where n is total armed strategies.
+   */
+  listArmedStrategies(): Array<{
+    triggerId: string;
+    strategy: LoadedStrategy;
+  }> {
+    const out: Array<{ triggerId: string; strategy: LoadedStrategy }> = [];
+    for (const [triggerId, bucket] of this.index) {
+      for (const strategy of bucket.values()) out.push({ triggerId, strategy });
+    }
+    return out;
+  }
+
+  /** True if the engine has any strategies armed for `triggerId`. */
+  hasTrigger(triggerId: string): boolean {
+    return this.index.has(triggerId);
+  }
+
   // ---------------------------------------------------------------------------
   // Hot path
   // ---------------------------------------------------------------------------
@@ -128,8 +149,15 @@ export class StrategyEngine {
     const bucket = this.index.get(event.triggerId);
     if (!bucket || bucket.size === 0) return;
 
+    // One throttled log per (trigger, eventType) pair so we can confirm WSS
+    // ticks are actually reaching the engine for the markets we care about,
+    // without spamming on every price_change.
+    this.logTick(event);
+
     const probability = this.extractor.extract(event);
     if (probability === null) return;
+
+    this.logProbability(event.triggerId, probability);
 
     // Snapshot to allow safe mutation (fireOnce removes from the bucket).
     const candidates = [...bucket.values()];
@@ -142,6 +170,29 @@ export class StrategyEngine {
         this.onStrategyFired?.(strategy, strategy.trigger.id, triggerNowEmpty);
       }
     }
+  }
+
+  private readonly lastTickLogAt = new Map<string, number>();
+  private logTick(event: WssMarketEvent): void {
+    const key = `${event.triggerId}:${event.type}`;
+    const now = Date.now();
+    const last = this.lastTickLogAt.get(key) ?? 0;
+    if (now - last < 5000) return;
+    this.lastTickLogAt.set(key, now);
+    console.log(
+      `[engine] tick for ${event.trigger.slug} type=${event.type} (1/5s sample)`,
+    );
+  }
+
+  private readonly lastProbLogAt = new Map<string, number>();
+  private logProbability(triggerId: string, probability: number): void {
+    const now = Date.now();
+    const last = this.lastProbLogAt.get(triggerId) ?? 0;
+    if (now - last < 5000) return;
+    this.lastProbLogAt.set(triggerId, now);
+    console.log(
+      `[engine] ${triggerId} probability=${(probability * 100).toFixed(2)}% (1/5s sample)`,
+    );
   }
 
   private evaluate(

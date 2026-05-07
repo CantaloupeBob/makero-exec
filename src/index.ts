@@ -18,6 +18,7 @@ import {
   BookStore,
   BookSynchronizer,
   loadAllStrategies,
+  loadAllStrategyIds,
   loadAttemptedStrategyIds,
   loadNewStrategies,
   PolymarketProbabilityExtractor,
@@ -106,18 +107,24 @@ async function main() {
     bus,
     extractor: new PolymarketProbabilityExtractor(
       yesTokens,
-      {},
+      {
+        // Allow tail-probability triggers (0% / 100%) to fire. At the extremes
+        // the YES book becomes one-sided (no bids at 0%, no asks at 100%) and
+        // the spread widens dramatically as liquidity evaporates. The default
+        // settings (requireBothSides=true, maxSpread=0.05, maxMidJump=0.2)
+        // would silently reject every such tick and the strategy would never
+        // evaluate. These looser settings still reject obviously broken books
+        // (crossed, out-of-range mid) via the dedicated invariant checks.
+        requireBothSides: false,
+        maxSpread: 0.2,
+        maxMidJump: 1, // disable the jump detector — binary markets DO move fast on news
+      },
       bookStore,
       (assetId, reason) => {
         console.warn(
           `[extractor] suspect book ${assetId} (${reason}) — requesting resync`,
         );
         void bookSync.requestResync(assetId, "suspect");
-      },
-      (slug, assetId, mid) => {
-        console.log(
-          `[prob] ${slug} (${assetId.slice(0, 8)}…) mid=${(mid * 100).toFixed(2)}%`,
-        );
       },
     ),
     onStrategyFired: (strategy, triggerId, triggerNowEmpty) => {
@@ -280,6 +287,11 @@ async function main() {
   // If no WSS events arrive within this window the connection is likely
   // silently stalled. Force a full book resync so probabilities don't
   // calcify on stale state.
+  //
+  // IMPORTANT: only meaningful while at least one subscription is open.
+  // With zero subscriptions there's nothing to receive events from, so the
+  // "silence" is expected — don't spam errors and don't trigger pointless
+  // REST resyncs.
   const WSS_HEARTBEAT_TIMEOUT_MS = 60_000;
   let lastWssEventAt = Date.now();
   manager.onEvent(() => {
@@ -287,13 +299,24 @@ async function main() {
   });
 
   const heartbeatTimer = setInterval(() => {
+    const subCount = manager.getStatus().subscriptions;
+    if (subCount === 0) {
+      // Keep the timestamp fresh so we don't fire instantly the moment a new
+      // subscription is added after a long idle window.
+      lastWssEventAt = Date.now();
+      return;
+    }
     const silenceMs = Date.now() - lastWssEventAt;
     if (silenceMs > WSS_HEARTBEAT_TIMEOUT_MS) {
       console.error(
-        `[boot] no WSS events for ${Math.round(silenceMs / 1_000)}s — ` +
-          `connection may be stalled, requesting full book resync`,
+        `[boot] no WSS events for ${Math.round(silenceMs / 1_000)}s ` +
+          `(subscriptions=${subCount}) — connection may be stalled, ` +
+          `requesting full book resync`,
       );
       void bookSync.resyncAll("reconnect");
+      // Reset so we don't spam the same warning every interval while the
+      // resync is in flight.
+      lastWssEventAt = Date.now();
     }
   }, WSS_HEARTBEAT_TIMEOUT_MS);
 
@@ -312,6 +335,10 @@ async function main() {
   // only causes redundant but harmless re-checks of already-armed strategies
   // (engine.addStrategy is idempotent — it won't duplicate an armed strategy).
   const POLL_OVERLAP_MS = 10_000;
+  // Strategies we've already announced as armed. Without this we'd re-log
+  // every poll tick because loadNewStrategies (correctly) returns every
+  // hasBeenAttempted=false row on each call.
+  const announcedStrategyIds = new Set<string>();
   const strategyPollTimer = setInterval(() => {
     const since = new Date(lastStrategyPollAt.getTime() - POLL_OVERLAP_MS);
     // Advance the cursor before awaiting so a slow poll doesn't double-count
@@ -319,31 +346,75 @@ async function main() {
     lastStrategyPollAt = new Date();
     void (async () => {
       try {
-        const newStrategies = await loadNewStrategies(since);
-        if (newStrategies.length === 0) return;
-        console.log(
-          `[strategy-poll] discovered ${newStrategies.length} new strategy/strategies`,
+        const allPending = await loadNewStrategies(since);
+        const newStrategies = allPending.filter(
+          (s) => !announcedStrategyIds.has(s.id),
         );
+        if (newStrategies.length > 0) {
+          console.log(
+            `[strategy-poll] discovered ${newStrategies.length} new strategy/strategies (since=${since.toISOString()})`,
+          );
 
-        await Promise.all(
-          newStrategies.map(async (s) => {
-            try {
-              const yesAssetId = await yesTokens.resolve(s.trigger);
-              if (yesAssetId) {
-                bookSync.track(yesAssetId);
-                triggerYesAssetId.set(s.trigger.id, yesAssetId);
+          await Promise.all(
+            newStrategies.map(async (s) => {
+              try {
+                const yesAssetId = await yesTokens.resolve(s.trigger);
+                if (yesAssetId) {
+                  bookSync.track(yesAssetId);
+                  triggerYesAssetId.set(s.trigger.id, yesAssetId);
+                  console.log(
+                    `[strategy-poll] armed strategy ${s.id} (${s.trigger.slug}) → ` +
+                      `asset=${yesAssetId.slice(0, 10)}… ${s.direction} ${(s.probability * 100).toFixed(2)}%`,
+                  );
+                }
+              } catch (err) {
+                console.warn(
+                  `[strategy-poll] could not resolve YES token for ${s.trigger.slug} ` +
+                    `(strategy ${s.id} will be armed but cannot fire until resolved): ` +
+                    `${err instanceof Error ? err.message : err}`,
+                );
               }
-            } catch (err) {
-              console.warn(
-                `[strategy-poll] could not resolve YES token for ${s.trigger.slug}: ` +
-                  `${err instanceof Error ? err.message : err}`,
-              );
-            }
-            manager.addSubscription(s.trigger, BOOT_CONSUMER);
-          }),
-        );
+              manager.addSubscription(s.trigger, BOOT_CONSUMER);
+              announcedStrategyIds.add(s.id);
+            }),
+          );
 
-        engine.addStrategies(newStrategies);
+          engine.addStrategies(newStrategies);
+        }
+
+        // ---- Deletion reconciliation ---------------------------------------
+        // Detect strategies the user has removed from the DB while the engine
+        // still holds them in memory and tear down their resources. Without
+        // this, a deleted-but-never-fired strategy would keep its WSS feed
+        // open and its book resyncing forever, and (more dangerously) could
+        // still fire — though `dispatch()` now also re-reads the row and
+        // refuses to execute when it's missing, so this is defense-in-depth
+        // plus the primary mechanism for releasing WSS / book resources.
+        const armed = engine.listArmedStrategies();
+        if (armed.length > 0) {
+          const liveIds = await loadAllStrategyIds();
+          for (const { triggerId, strategy } of armed) {
+            if (liveIds.has(strategy.id)) continue;
+            console.warn(
+              `[strategy-poll] strategy ${strategy.id} (${strategy.trigger.slug}) ` +
+                `no longer exists in DB — evicting from engine`,
+            );
+            engine.removeStrategy(strategy.id, triggerId);
+            announcedStrategyIds.delete(strategy.id);
+            if (!engine.hasTrigger(triggerId)) {
+              console.log(
+                `[strategy-poll] trigger ${triggerId} now empty after deletion — ` +
+                  `closing WSS feed`,
+              );
+              manager.removeSubscription(strategy.trigger, BOOT_CONSUMER);
+              const yesAssetId = triggerYesAssetId.get(triggerId);
+              if (yesAssetId) {
+                bookSync.untrack(yesAssetId);
+                triggerYesAssetId.delete(triggerId);
+              }
+            }
+          }
+        }
       } catch (err) {
         console.error(
           "[strategy-poll] error polling for new strategies:",

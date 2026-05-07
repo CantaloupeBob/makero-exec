@@ -11,6 +11,7 @@ import {
   markStrategyAttempted,
   StrategyAlreadyLatched,
 } from "./order-repository.ts";
+import { loadStrategyById } from "../strategy/repository.ts";
 import type { Venue, OrderExecutionResult } from "./types.ts";
 import { notifyDiscord } from "../lib/discord.ts";
 export interface StrategyExecutorOptions {
@@ -113,7 +114,41 @@ export class StrategyExecutor {
       return;
     }
 
-    const venue = this.route(cause, this.venues);
+    // Re-read the strategy row at dispatch time. Two reasons:
+    //   1. The user may have deleted the strategy between arming and firing.
+    //      In that case we must NOT execute, must NOT latch (the row is gone),
+    //      and the engine reconciliation loop will evict the in-memory copy.
+    //   2. The user may have updated mutable fields (notably `userAddress` /
+    //      account routing) since the strategy was armed. The in-memory
+    //      snapshot on `cause` is stale; the DB is authoritative for the
+    //      actual trade. (`triggerSource` is immutable per-strategy by
+    //      product contract — see WSS subscription model — so we don't need
+    //      to re-resolve the trigger here.)
+    const fresh = await loadStrategyById(cause.strategyId);
+    if (!fresh) {
+      console.warn(
+        `[exec] strategy ${cause.strategyId} no longer exists in DB ` +
+          `(deleted after firing) — dropping without execution or latch`,
+      );
+      return;
+    }
+
+    // Build a routing event that mirrors `cause` but uses the freshly-read
+    // userAddress. We only swap fields the venue actually consumes; the
+    // observed-probability / cause-event-id metadata stays as-is so logs
+    // remain correlated to the firing tick.
+    const dispatchCause: StrategyTriggeredEvent =
+      fresh.userAddress === cause.userAddress
+        ? cause
+        : { ...cause, userAddress: fresh.userAddress };
+    if (fresh.userAddress !== cause.userAddress) {
+      console.warn(
+        `[exec] strategy ${cause.strategyId} userAddress changed since arming ` +
+          `(${cause.userAddress} → ${fresh.userAddress}) — using DB value`,
+      );
+    }
+
+    const venue = this.route(dispatchCause, this.venues);
     if (!venue) {
       console.warn(
         `[exec] no venue for strategy ${cause.strategyId} — cannot execute`,
@@ -182,7 +217,7 @@ export class StrategyExecutor {
 
     let results: readonly OrderExecutionResult[];
     try {
-      results = await venue.execute(cause, orders.orders);
+      results = await venue.execute(dispatchCause, orders.orders);
       // Successful round-trip to venue resets the failure counter.
       this.consecutiveFailures = 0;
     } catch (err) {
@@ -214,7 +249,7 @@ export class StrategyExecutor {
 
     // Fire-and-forget Discord notification — errors are swallowed inside notifyDiscord.
     void notifyDiscord({
-      cause,
+      cause: dispatchCause,
       venueName: venue.name,
       orders: orders.orders,
       results,

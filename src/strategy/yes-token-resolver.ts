@@ -44,16 +44,35 @@ export class YesTokenResolver {
       );
     }
     const info = await this.client.getClobMarketInfo(trigger.conditionId);
-    const yesToken = (info?.t ?? []).find(
+    const tokens = (info?.t ?? []).filter(
       (t): t is { t: string; o: string } =>
-        !!t && typeof t.o === "string" && t.o.toLowerCase() === "yes",
+        !!t && typeof t.t === "string" && typeof t.o === "string",
     );
-    if (!yesToken) {
+    if (tokens.length === 0) {
       throw new Error(
-        `No "Yes" token found for condition ${trigger.conditionId} (${trigger.slug})`,
+        `No outcome tokens found for condition ${trigger.conditionId} (${trigger.slug})`,
       );
     }
-    this.cache.set(trigger.conditionId, yesToken.t);
-    return yesToken.t;
+
+    // Polymarket binary markets come in two flavours:
+    //   1. Yes/No outcomes (most political, news markets)
+    //   2. Domain-specific paired outcomes (Up/Down, Trump/Harris, …)
+    //
+    // For (1) the "Yes" token's price IS the probability of the event.
+    // For (2) there is no canonical "Yes" — by convention we use the FIRST
+    // listed outcome's token, which Polymarket emits in a stable order
+    // matching the market's natural framing (e.g. "BTC Up or Down" → "Up"
+    // first → "Up" probability). Strategy authors must understand that for
+    // non-Yes/No markets the threshold refers to the first outcome's price.
+    const explicitYes = tokens.find((t) => t.o.toLowerCase() === "yes");
+    const chosen = explicitYes ?? tokens[0]!;
+    if (!explicitYes) {
+      console.warn(
+        `[yes-token] market ${trigger.slug} has no "Yes" outcome — ` +
+          `using first outcome "${chosen.o}" as the probability source`,
+      );
+    }
+    this.cache.set(trigger.conditionId, chosen.t);
+    return chosen.t;
   }
 }
