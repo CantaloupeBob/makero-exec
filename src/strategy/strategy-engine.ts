@@ -141,6 +141,20 @@ export class StrategyEngine {
     return this.index.has(triggerId);
   }
 
+  /**
+   * Remove every strategy attached to `triggerId` and return the snapshot
+   * of evicted strategies so the host can tear down the WSS subscription /
+   * book tracking. Currently unused on the hot path — kept for future use
+   * by the host's reconciliation loops.
+   */
+  drainTrigger(triggerId: string): LoadedStrategy[] {
+    const bucket = this.index.get(triggerId);
+    if (!bucket) return [];
+    const evicted = [...bucket.values()];
+    this.index.delete(triggerId);
+    return evicted;
+  }
+
   // ---------------------------------------------------------------------------
   // Hot path
   // ---------------------------------------------------------------------------
@@ -161,7 +175,20 @@ export class StrategyEngine {
 
     // Snapshot to allow safe mutation (fireOnce removes from the bucket).
     const candidates = [...bucket.values()];
+    const now = Date.now();
     for (const strategy of candidates) {
+      // Per-strategy expiry gate. If the strategy's window has passed,
+      // skip it — even if the book still moves (post-resolution noise can
+      // leave a stale 0.99 bid on the YES side and trip a `>= 99%` strategy
+      // belonging to the LOSING side minutes after the outcome was decided).
+      //
+      // `triggerEndDateTime` is a JS Date (absolute instant), so this
+      // comparison is timezone-free regardless of how the column was stored
+      // — Polymarket's ET-naming of the market is a label, not a TZ.
+      if (now > strategy.triggerEndDateTime.getTime()) {
+        this.logExpiredSkip(strategy);
+        continue;
+      }
       if (!this.evaluate(strategy, probability)) continue;
       this.fire(strategy, probability, event);
       if (this.fireOnce) {
@@ -179,8 +206,17 @@ export class StrategyEngine {
     const last = this.lastTickLogAt.get(key) ?? 0;
     if (now - last < 5000) return;
     this.lastTickLogAt.set(key, now);
+  }
+
+  private readonly lastExpiredSkipLogAt = new Map<string, number>();
+  private logExpiredSkip(strategy: LoadedStrategy): void {
+    const now = Date.now();
+    const last = this.lastExpiredSkipLogAt.get(strategy.id) ?? 0;
+    if (now - last < 30_000) return;
+    this.lastExpiredSkipLogAt.set(strategy.id, now);
     console.log(
-      `[engine] tick for ${event.trigger.slug} type=${event.type} (1/5s sample)`,
+      `[engine] skipping strategy ${strategy.id} (${strategy.trigger.slug}) — ` +
+        `past trigger_end_date_time ${strategy.triggerEndDateTime.toISOString()} (1/30s sample)`,
     );
   }
 

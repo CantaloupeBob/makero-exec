@@ -415,6 +415,16 @@ async function main() {
             }
           }
         }
+
+        // ---- Market expiry ------------------------------------------------
+        // The engine's hot path already skips any individual strategy whose
+        // `triggerEndDateTime` has passed, so post-resolution book noise can
+        // no longer trip a stale strategy. We do NOT mark expired strategies
+        // attempted in the DB or tear down their WSS feed here — siblings on
+        // the same trigger may still be in-window, and the trigger feed will
+        // close naturally when the last in-window strategy fires (via
+        // onStrategyFired) or when the user removes them from the DB
+        // (handled by the deletion-reconciliation block above).
       } catch (err) {
         console.error(
           "[strategy-poll] error polling for new strategies:",

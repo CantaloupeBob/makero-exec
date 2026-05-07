@@ -34,7 +34,9 @@ export const apiWallets = pgTable(
     dekNonce: text("dek_nonce").notNull(),
     /** Auto-generated name: {userAddress}-{n} */
     name: text("name").notNull(),
-    createdAt: timestamp("created_at").defaultNow().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
   },
   (table) => [
     /** Index for looking up all wallets belonging to a user */
@@ -56,9 +58,11 @@ export const nonces = pgTable("nonces", {
   /** The user this nonce was issued for */
   userAddress: text("user_address").notNull(),
   /** When this nonce was issued */
-  issuedAt: timestamp("issued_at").defaultNow().notNull(),
+  issuedAt: timestamp("issued_at", { withTimezone: true })
+    .defaultNow()
+    .notNull(),
   /** When this nonce was consumed — null means still valid */
-  usedAt: timestamp("used_at"),
+  usedAt: timestamp("used_at", { withTimezone: true }),
 });
 
 export type Nonce = typeof nonces.$inferSelect;
@@ -82,12 +86,16 @@ export const strategies = pgTable(
     /** Trigger direction: ">=" or "<=" */
     triggerDirection: text("trigger_direction").notNull(),
     /** The time at which the event the trigger is for ends */
-    triggerEndDateTime: timestamp("trigger_end_date_time").notNull(),
+    triggerEndDateTime: timestamp("trigger_end_date_time", {
+      withTimezone: true,
+    }).notNull(),
     /** Has the executor attempted to execute this strategy */
     hasBeenAttempted: boolean("has_been_attempted").notNull().default(false),
     /** Nonce used for the signed create message */
     createNonce: text("create_nonce").notNull(),
-    createdAt: timestamp("created_at").defaultNow().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
   },
   (table) => [index("idx_strategies_user").on(table.userAddress)],
 );
@@ -132,15 +140,21 @@ export const orders = pgTable(
       .notNull()
       .references(() => strategies.id, { onDelete: "cascade" }),
     /** Unix timestamp (ms) past which the order can no longer be executed */
-    orderDeadline: timestamp("order_deadline").notNull(),
+    orderDeadline: timestamp("order_deadline", {
+      withTimezone: true,
+    }).notNull(),
     /** Lifecycle status */
     status: text("status").notNull().default("pending"),
     /** Whether the order has been executed on-chain */
     isExecuted: boolean("is_executed").notNull().default(false),
     /** Nonce used for the signed create message (one-time, burned) */
     createNonce: text("create_nonce").notNull(),
-    createdAt: timestamp("created_at").defaultNow().notNull(),
-    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
   },
   (table) => [
     index("idx_orders_user").on(table.userAddress),

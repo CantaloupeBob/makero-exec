@@ -20,6 +20,17 @@ export interface LoadedStrategy {
   /** Probability threshold in `[0, 1]`. */
   readonly probability: number;
   readonly direction: TriggerDirection;
+  /**
+   * Wall-clock instant at which the underlying market expires. After this
+   * point the strategy MUST NOT fire — the book may still emit
+   * post-resolution noise (stale resting orders being torn down) but those
+   * ticks no longer reflect a tradeable view of the world.
+   *
+   * Stored in the DB as `timestamptz`. Postgres normalises to UTC on write
+   * and node-postgres always returns a correct absolute instant regardless
+   * of the process's local TZ. No manual TZ conversion is needed.
+   */
+  readonly triggerEndDateTime: Date;
 }
 
 export class StrategyParseError extends Error {

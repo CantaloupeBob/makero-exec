@@ -54,6 +54,7 @@ export async function loadStrategyById(
       triggerSource: strategies.triggerSource,
       triggerProbability: strategies.triggerProbability,
       triggerDirection: strategies.triggerDirection,
+      triggerEndDateTime: strategies.triggerEndDateTime,
       createdAt: strategies.createdAt,
     })
     .from(strategies)
@@ -74,6 +75,7 @@ export async function loadAllStrategies(): Promise<LoadedStrategy[]> {
       triggerSource: strategies.triggerSource,
       triggerProbability: strategies.triggerProbability,
       triggerDirection: strategies.triggerDirection,
+      triggerEndDateTime: strategies.triggerEndDateTime,
       createdAt: strategies.createdAt,
     })
     .from(strategies);
@@ -84,12 +86,10 @@ export async function loadAllStrategies(): Promise<LoadedStrategy[]> {
  * Load strategies that have not yet been attempted. Used by the polling loop
  * to pick up strategies armed after boot.
  *
- * NOTE: we deliberately do NOT filter by `createdAt > since`. The `created_at`
- * column is `timestamp` (no timezone), so comparing it against a JS Date is
- * subject to TZ skew between the app and DB server and can silently exclude
- * rows. The pending-strategies set is small, so a full scan filtered by
- * `hasBeenAttempted = false` is cheap and correct. The `since` parameter is
- * kept for log/diagnostic purposes only.
+ * NOTE: we deliberately do NOT filter by `createdAt > since`. The pending-
+ * strategies set is small so a full scan filtered by `hasBeenAttempted = false`
+ * is cheap, correct, and avoids any edge cases around clock skew between the
+ * app and DB server. The `since` parameter is kept for log/diagnostic purposes.
  */
 export async function loadNewStrategies(
   since: Date,
@@ -103,6 +103,7 @@ export async function loadNewStrategies(
       triggerSource: strategies.triggerSource,
       triggerProbability: strategies.triggerProbability,
       triggerDirection: strategies.triggerDirection,
+      triggerEndDateTime: strategies.triggerEndDateTime,
       createdAt: strategies.createdAt,
     })
     .from(strategies)
@@ -124,6 +125,7 @@ function parseStrategyRows(
     triggerSource: string;
     triggerProbability: number;
     triggerDirection: string;
+    triggerEndDateTime: Date;
     createdAt: Date;
   }>,
 ): LoadedStrategy[] {
@@ -148,6 +150,7 @@ function toLoadedStrategy(row: {
   triggerSource: string;
   triggerProbability: number;
   triggerDirection: string;
+  triggerEndDateTime: Date;
   createdAt: Date;
 }): LoadedStrategy {
   const trigger = parseTriggerKey(row.triggerSource);
@@ -168,6 +171,16 @@ function toLoadedStrategy(row: {
     );
   }
 
+  if (
+    !(row.triggerEndDateTime instanceof Date) ||
+    Number.isNaN(row.triggerEndDateTime.getTime())
+  ) {
+    throw new StrategyParseError(
+      row.id,
+      `trigger_end_date_time is not a valid date: ${String(row.triggerEndDateTime)}`,
+    );
+  }
+
   return {
     id: row.id,
     userAddress: row.userAddress,
@@ -175,5 +188,6 @@ function toLoadedStrategy(row: {
     trigger,
     probability,
     direction,
+    triggerEndDateTime: row.triggerEndDateTime,
   };
 }
