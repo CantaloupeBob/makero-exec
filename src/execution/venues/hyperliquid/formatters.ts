@@ -32,14 +32,23 @@ export function aggressiveLimitPrice(
  * is configured separately via `updateLeverage`. The user's "sizeUsdc"
  * field represents the *notional* they want to take, and the size on the
  * wire is therefore `sizeUsdc / mid`.
+ *
+ * Sizing also incorporates `slippage` as a *buffer*: we compute size from
+ * `(sizeUsdc * (1 + slippage)) / mid` so that
+ *   1. the truncation `formatSize` performs (rounding DOWN to `szDecimals`)
+ *      doesn't push us below Hyperliquid's $10 minimum-notional check, and
+ *   2. when the IOC fills at the aggressive limit price (mid ± slippage),
+ *      the realized notional is still ≥ `sizeUsdc` rather than `sizeUsdc *
+ *      (1 - slippage)`.
  */
 export function sizeFromUsdcNotional(
   sizeUsdc: number,
   mid: number,
   szDecimals: number,
+  slippage: number = DEFAULT_SLIPPAGE,
 ): string {
   if (mid <= 0) throw new RangeError("mid must be > 0");
-  const baseSize = sizeUsdc / mid;
+  const baseSize = (sizeUsdc * (1 + slippage)) / mid;
   return formatSize(baseSize, szDecimals);
 }
 

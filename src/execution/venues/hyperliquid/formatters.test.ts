@@ -73,7 +73,7 @@ describe("sizeFromUsdcNotional", () => {
     const mid = 60_000;
     const szDecimals = sz("BTC"); // 5
     const sizeUsdc = 300; // $300 → 0.005 BTC
-    const size = sizeFromUsdcNotional(sizeUsdc, mid, szDecimals);
+    const size = sizeFromUsdcNotional(sizeUsdc, mid, szDecimals, 0);
     expect(Number(size)).toBeCloseTo(sizeUsdc / mid, 5);
   });
 
@@ -81,7 +81,7 @@ describe("sizeFromUsdcNotional", () => {
     const mid = 150;
     const szDecimals = sz("SOL"); // 2
     const sizeUsdc = 1_500; // $1500 → 10 SOL
-    const size = sizeFromUsdcNotional(sizeUsdc, mid, szDecimals);
+    const size = sizeFromUsdcNotional(sizeUsdc, mid, szDecimals, 0);
     expect(Number(size)).toBeCloseTo(10, 2);
   });
 
@@ -89,8 +89,38 @@ describe("sizeFromUsdcNotional", () => {
     const mid = 0.5;
     const szDecimals = sz("XRP"); // 0
     const sizeUsdc = 500; // $500 → 1000 XRP
-    const size = sizeFromUsdcNotional(sizeUsdc, mid, szDecimals);
+    const size = sizeFromUsdcNotional(sizeUsdc, mid, szDecimals, 0);
     expect(Number(size)).toBeCloseTo(1_000, 0);
+  });
+
+  it("inflates size by the slippage buffer to clear the $10 minimum after truncation", () => {
+    // LTC-like: mid ~$58.66, szDecimals=2, $11 notional, 50bps slippage.
+    // Without buffer: 11 / 58.66 = 0.1875… → truncates to 0.18 → notional $10.56.
+    // The buffer ensures we stay strictly above Hyperliquid's $10 floor even
+    // if the mark drifts slightly between the mid read and order acceptance.
+    const mid = 58.66;
+    const sizeUsdc = 11;
+    const slippage = 0.005;
+    const size = sizeFromUsdcNotional(sizeUsdc, mid, 2, slippage);
+    const notional = Number(size) * mid;
+    // Must clear Hyperliquid's $10 minimum.
+    expect(notional).toBeGreaterThan(10);
+    // Must not exceed user intent by more than the slippage buffer + one
+    // szDecimal tick (the unit of upward rounding from formatSize truncation
+    // when the buffer crosses a decimal boundary).
+    const oneTick = mid * Math.pow(10, -2);
+    expect(notional).toBeLessThanOrEqual(sizeUsdc * (1 + slippage) + oneTick);
+  });
+
+  it("buffer pushes size up by one tick when the truncation boundary is crossed", () => {
+    // Choose mid+sizeUsdc so that without buffer we truncate to N, with buffer
+    // we cross to N+1 tick. mid=10, szDecimals=1, sizeUsdc=1.95:
+    //   without buffer → 0.195 → truncates to 0.1 (notional $1)
+    //   with 5% buffer → 2.0475/10 = 0.2047 → truncates to 0.2 (notional $2)
+    const noBuffer = sizeFromUsdcNotional(1.95, 10, 1, 0);
+    const withBuffer = sizeFromUsdcNotional(1.95, 10, 1, 0.05);
+    expect(Number(noBuffer)).toBe(0.1);
+    expect(Number(withBuffer)).toBe(0.2);
   });
 
   it("throws for mid <= 0", () => {

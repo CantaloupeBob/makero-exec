@@ -21,11 +21,15 @@ export class HyperliquidAssetResolver {
   private converterReady: Promise<SymbolConverter> | null = null;
   private converterFetchedAt = 0;
   private readonly info: InfoClient;
-  private midsCache: {
-    fetchedAt: number;
-    mids: Record<string, string>;
-  } | null = null;
-  private midsInflight: Promise<Record<string, string>> | null = null;
+  // Keyed by dex name ("" for main perps, "cash", "xyz", etc.)
+  private readonly midsCache = new Map<
+    string,
+    { fetchedAt: number; mids: Record<string, string> }
+  >();
+  private readonly midsInflight = new Map<
+    string,
+    Promise<Record<string, string>>
+  >();
 
   constructor(
     private readonly transport: IRequestTransport,
@@ -95,7 +99,14 @@ export class HyperliquidAssetResolver {
    * same mid within a few hundred microseconds of each other.
    */
   async mid(asset: string): Promise<number> {
-    const mids = await this.allMids();
+    // Assets on builder dexes use the "{dex}:{coin}" format (e.g. "cash:WTI",
+    // "xyz:META"). The allMids endpoint is partitioned per dex — we must pass
+    // the dex name to query the right partition. The response keys include
+    // the full prefixed asset name, so we look up by `asset` directly.
+    const colonIdx = asset.indexOf(":");
+    const dex = colonIdx === -1 ? "" : asset.slice(0, colonIdx);
+
+    const mids = await this.allMids(dex);
     const raw = mids[asset];
     if (!raw) {
       throw new Error(`No mid price for "${asset}" in Hyperliquid allMids`);
@@ -107,24 +118,27 @@ export class HyperliquidAssetResolver {
     return n;
   }
 
-  private async allMids(): Promise<Record<string, string>> {
+  private async allMids(dex: string = ""): Promise<Record<string, string>> {
     const now = Date.now();
-    if (this.midsCache && now - this.midsCache.fetchedAt < this.midTtlMs) {
-      return this.midsCache.mids;
+    const cached = this.midsCache.get(dex);
+    if (cached && now - cached.fetchedAt < this.midTtlMs) {
+      return cached.mids;
     }
-    if (this.midsInflight) return this.midsInflight;
-    this.midsInflight = this.info
-      .allMids()
+    const inflight = this.midsInflight.get(dex);
+    if (inflight) return inflight;
+    const promise = this.info
+      .allMids(dex ? { dex } : undefined)
       .then((mids) => {
-        this.midsCache = { fetchedAt: Date.now(), mids };
-        this.midsInflight = null;
+        this.midsCache.set(dex, { fetchedAt: Date.now(), mids });
+        this.midsInflight.delete(dex);
         return mids;
       })
       .catch((err) => {
-        this.midsInflight = null;
+        this.midsInflight.delete(dex);
         throw err;
       });
-    return this.midsInflight;
+    this.midsInflight.set(dex, promise);
+    return promise;
   }
 }
 

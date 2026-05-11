@@ -146,12 +146,18 @@ export class HyperliquidVenue implements Venue {
       szDecimals,
       order.maxSlippagePct / 100,
     );
-    // Size is calculated from the aggressive limit price (not raw mid) so the
-    // notional on the wire matches what the user intended at the fill price.
+    // Size is calculated from the raw mid + slippage buffer (not the aggressive
+    // limit price) so that:
+    //   1. Hyperliquid's $10 minimum-notional check (evaluated against mark)
+    //      isn't tripped by `formatSize` truncating us a few cents below
+    //      the user's intended notional.
+    //   2. The realized notional after an IOC fill at the aggressive limit
+    //      is ≥ sizeUsdc, not sizeUsdc * (1 - slippage).
     const sz = sizeFromUsdcNotional(
       order.sizeUsdc,
-      Number(entryPx),
+      mid,
       szDecimals,
+      order.maxSlippagePct / 100,
     );
 
     // Best-effort leverage update. Failing here shouldn't block the order
