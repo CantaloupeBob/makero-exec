@@ -64,48 +64,52 @@ export class ApiWalletLoader {
     userAddress: string,
   ): Promise<PrivateKeyAccount> {
     const db = getDb();
-    const rows = await db
-      .select({
-        encryptedValue: apiWallets.encryptedPrivateKey,
-        valueNonce: apiWallets.privateKeyNonce,
-        encryptedDek: apiWallets.encryptedDek,
-        dekNonce: apiWallets.dekNonce,
-        apiWalletAddress: apiWallets.apiWalletAddress,
-      })
-      .from(apiWallets)
-      .where(eq(apiWallets.userAddress, userAddress))
-      .limit(1);
 
-    const row = rows[rows.length - 1];
-    if (!row) {
+    // Fetch registered extra agents from Hyperliquid and all DB rows in parallel.
+    const transport = new HttpTransport();
+    const [agents, rows] = await Promise.all([
+      extraAgents({ transport }, { user: userAddress as `0x${string}` }),
+      db
+        .select({
+          encryptedValue: apiWallets.encryptedPrivateKey,
+          valueNonce: apiWallets.privateKeyNonce,
+          encryptedDek: apiWallets.encryptedDek,
+          dekNonce: apiWallets.dekNonce,
+          apiWalletAddress: apiWallets.apiWalletAddress,
+        })
+        .from(apiWallets)
+        .where(eq(apiWallets.userAddress, userAddress)),
+    ]);
+
+    if (rows.length === 0) {
       throw new Error(`No API wallet found for user ${userAddress}`);
     }
 
-    // Verify the API wallet is registered on Hyperliquid and hasn't expired.
-    const transport = new HttpTransport();
-    const agents = await extraAgents(
-      { transport },
-      { user: userAddress as `0x${string}` },
-    );
     const now = Date.now();
-    const registered = agents.find(
-      (a) => a.address.toLowerCase() === row.apiWalletAddress.toLowerCase(),
+
+    // Build a lookup map of DB rows keyed by lowercased wallet address.
+    const dbRowByAddress = new Map(
+      rows.map((r) => [r.apiWalletAddress.toLowerCase(), r]),
     );
-    if (!registered) {
-      throw new Error(
-        `API wallet ${row.apiWalletAddress} is not registered as an extra agent for ${userAddress}`,
-      );
-    }
-    if (registered.validUntil < now) {
-      throw new Error(
-        `API wallet ${row.apiWalletAddress} for ${userAddress} has expired (validUntil=${new Date(registered.validUntil).toISOString()})`,
-      );
+
+    // Iterate registered agents in order; use the first one that exists in DB
+    // and has not expired.
+    for (const agent of agents) {
+      if (agent.validUntil < now) continue;
+      const row = dbRowByAddress.get(agent.address.toLowerCase());
+      if (!row) continue;
+
+      const plaintext = decryptSecret(row);
+      const hex = (
+        plaintext.startsWith("0x") ? plaintext : `0x${plaintext}`
+      ) as `0x${string}`;
+      return privateKeyToAccount(hex);
     }
 
-    const plaintext = decryptSecret(row);
-    const hex = (
-      plaintext.startsWith("0x") ? plaintext : `0x${plaintext}`
-    ) as `0x${string}`;
-    return privateKeyToAccount(hex);
+    throw new Error(
+      `No valid registered API wallet found for user ${userAddress}. ` +
+        `Either none of the DB wallets are registered as extra agents on Hyperliquid, ` +
+        `or all registered agents have expired.`,
+    );
   }
 }
