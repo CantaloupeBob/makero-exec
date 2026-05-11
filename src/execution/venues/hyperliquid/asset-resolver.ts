@@ -51,6 +51,11 @@ export class HyperliquidAssetResolver {
     if (this.converterReady) return this.converterReady;
     this.converterReady = SymbolConverter.create({
       transport: this.transport,
+      // Load all builder-deployed dexes (hip3 / tsradfi perps) so that assets
+      // with the "{dex}:{coin}" naming convention (e.g. "xyz:GOLD") resolve
+      // correctly. The extra meta round-trips happen only on cold-start / TTL
+      // refresh, not per-order.
+      dexs: true,
     })
       .then((c) => {
         this.converter = c;
