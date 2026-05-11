@@ -4,6 +4,8 @@ import type { PrivateKeyAccount } from "viem";
 import { getDb } from "../db/client.ts";
 import { apiWallets } from "../db/schema.ts";
 import { decryptSecret } from "../lib/crypto.ts";
+import { extraAgents } from "@nktkas/hyperliquid/api/info";
+import { HttpTransport } from "@nktkas/hyperliquid";
 
 /**
  * Resolves a master `userAddress` to a signing-ready viem account derived
@@ -68,18 +70,39 @@ export class ApiWalletLoader {
         valueNonce: apiWallets.privateKeyNonce,
         encryptedDek: apiWallets.encryptedDek,
         dekNonce: apiWallets.dekNonce,
+        apiWalletAddress: apiWallets.apiWalletAddress,
       })
       .from(apiWallets)
       .where(eq(apiWallets.userAddress, userAddress))
       .limit(1);
 
-    const row = rows[0];
+    const row = rows[rows.length - 1];
     if (!row) {
       throw new Error(`No API wallet found for user ${userAddress}`);
     }
 
+    // Verify the API wallet is registered on Hyperliquid and hasn't expired.
+    const transport = new HttpTransport();
+    const agents = await extraAgents(
+      { transport },
+      { user: userAddress as `0x${string}` },
+    );
+    const now = Date.now();
+    const registered = agents.find(
+      (a) => a.address.toLowerCase() === row.apiWalletAddress.toLowerCase(),
+    );
+    if (!registered) {
+      throw new Error(
+        `API wallet ${row.apiWalletAddress} is not registered as an extra agent for ${userAddress}`,
+      );
+    }
+    if (registered.validUntil < now) {
+      throw new Error(
+        `API wallet ${row.apiWalletAddress} for ${userAddress} has expired (validUntil=${new Date(registered.validUntil).toISOString()})`,
+      );
+    }
+
     const plaintext = decryptSecret(row);
-    // Tolerate keys persisted with or without the `0x` prefix.
     const hex = (
       plaintext.startsWith("0x") ? plaintext : `0x${plaintext}`
     ) as `0x${string}`;

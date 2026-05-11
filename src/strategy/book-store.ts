@@ -13,6 +13,8 @@ export class BookStore {
   private readonly books = new Map<string, BookState>();
   /** Last upstream `hash` we observed per asset_id, if any. */
   private readonly lastHash = new Map<string, string>();
+  /** Last trade price per asset_id, updated from `last_trade_price` events. */
+  private readonly lastTradePrice = new Map<string, number>();
 
   /**
    * Ingest a WSS event. Returns the asset_id whose book was touched, or
@@ -40,6 +42,16 @@ export class BookStore {
       }
       case "price_change":
         return this.applyPriceChangePayload(payload);
+      case "last_trade_price": {
+        const assetId =
+          typeof payload["asset_id"] === "string" ? payload["asset_id"] : null;
+        const price = parseNum(payload["price"]);
+        if (assetId && price !== null) {
+          this.lastTradePrice.set(assetId, price);
+          return [assetId];
+        }
+        return [];
+      }
       default:
         return [];
     }
@@ -53,6 +65,11 @@ export class BookStore {
   /** Most recent upstream `hash` observed for the asset, if any. */
   getLastHash(assetId: string): string | null {
     return this.lastHash.get(assetId) ?? null;
+  }
+
+  /** Most recent last-trade price observed for the asset, if any. */
+  getLastTradePrice(assetId: string): number | null {
+    return this.lastTradePrice.get(assetId) ?? null;
   }
 
   /**

@@ -34,7 +34,11 @@ export interface ProbabilityExtractor {
 }
 
 export interface ProbabilityFilterOptions {
-  /** Maximum tolerated bid/ask spread, in probability units. */
+  /**
+   * Maximum spread for using the mid-price. If (best_ask - best_bid) > maxSpread,
+   * falls back to last trade price instead. Matches Polymarket's own display logic
+   * (they use $0.10 / 10 cents as the threshold). Set to 1 to always use mid.
+   */
   readonly maxSpread: number;
   /** Minimum size required at *both* the best bid and the best ask. */
   readonly minTopSize: number;
@@ -50,7 +54,7 @@ export interface ProbabilityFilterOptions {
 }
 
 export const DEFAULT_FILTER_OPTIONS: ProbabilityFilterOptions = {
-  maxSpread: 0.05,
+  maxSpread: 0.1,
   minTopSize: 0,
   requireBothSides: true,
   maxMidJump: 0.2,
@@ -125,6 +129,7 @@ export class PolymarketProbabilityExtractor implements ProbabilityExtractor {
 
     const bid = book.bestBid();
     const ask = book.bestAsk();
+    const lastTradePrice = this.books.getLastTradePrice(yesAssetId);
 
     // 4. Sanity checks. A book that is crossed, has a negative spread, or
     //    produces a mid outside [0, 1] is almost certainly the result of
@@ -145,7 +150,7 @@ export class PolymarketProbabilityExtractor implements ProbabilityExtractor {
       }
     }
 
-    const mid = applyFilters(bid, ask, this.opts);
+    const mid = applyFilters(bid, ask, lastTradePrice, this.opts);
     if (mid === null) {
       this.logRejection(yesAssetId, event.trigger.slug, bid, ask);
       return null;
@@ -210,6 +215,7 @@ export class PolymarketProbabilityExtractor implements ProbabilityExtractor {
 function applyFilters(
   bid: { price: number; size: number } | null,
   ask: { price: number; size: number } | null,
+  lastTradePrice: number | null,
   opts: ProbabilityFilterOptions,
 ): number | null {
   if (opts.requireBothSides && (!bid || !ask)) return null;
@@ -217,14 +223,17 @@ function applyFilters(
   if (bid && ask) {
     const spread = ask.price - bid.price;
     if (spread < 0) return null; // crossed/malformed book — don't trust it
-    if (spread > opts.maxSpread) return null;
     if (
       opts.minTopSize > 0 &&
       (bid.size < opts.minTopSize || ask.size < opts.minTopSize)
     ) {
       return null;
     }
-    return clamp01((bid.price + ask.price) / 2);
+    // Polymarket display rule: mid if spread ≤ maxSpread, else last trade price.
+    if (spread <= opts.maxSpread) {
+      return clamp01((bid.price + ask.price) / 2);
+    }
+    return lastTradePrice !== null ? clamp01(lastTradePrice) : null;
   }
 
   // One-sided book and the caller is OK with that.
