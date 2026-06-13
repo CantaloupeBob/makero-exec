@@ -1,6 +1,16 @@
 import type { WssMarketEvent } from "../event-bus/event-bus.ts";
+import type { TriggerKey } from "../wss/triggers/trigger-key.ts";
 import { BookStore } from "./book-store.ts";
-import type { YesTokenResolver } from "./yes-token-resolver.ts";
+
+/**
+ * Minimal synchronous YES-token lookup the extractor depends on. Kept as a
+ * narrow interface (rather than the concrete resolver class) so the extractor
+ * stays unit-testable with a trivial fake. Satisfied by
+ * `PolymarketMarketResolver`.
+ */
+export interface YesTokenSource {
+  getYes(trigger: TriggerKey): string | null;
+}
 
 /**
  * Pulls a *live* implied probability in `[0, 1]` out of a WSS event, or
@@ -97,7 +107,7 @@ export class PolymarketProbabilityExtractor implements ProbabilityExtractor {
   private readonly lastMid = new Map<string, number>();
 
   constructor(
-    private readonly yesTokens: YesTokenResolver,
+    private readonly yesTokens: YesTokenSource,
     opts: Partial<ProbabilityFilterOptions> = {},
     books?: BookStore,
     onSuspect?: SuspectBookHandler,
@@ -118,7 +128,7 @@ export class PolymarketProbabilityExtractor implements ProbabilityExtractor {
     // 2. Identify the YES asset for this trigger. Until the YES token is
     //    resolved we can't compute a probability, but ingestion above has
     //    already happened so no information is lost.
-    const yesAssetId = this.yesTokens.get(event.trigger);
+    const yesAssetId = this.yesTokens.getYes(event.trigger);
     if (!yesAssetId) return null;
 
     // 3. Only react when the YES book was among the touched assets.

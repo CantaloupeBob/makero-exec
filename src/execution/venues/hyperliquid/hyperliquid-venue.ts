@@ -16,8 +16,8 @@ import {
   aggressiveLimitPrice,
   sizeFromUsdcNotional,
   triggerPriceFromPct,
-  DEFAULT_SLIPPAGE,
 } from "./formatters.ts";
+import { DEFAULT_SLIPPAGE } from "../../../lib/constants/hyperliquid-constants.ts";
 
 export interface HyperliquidVenueOptions {
   readonly walletLoader: ApiWalletLoader;

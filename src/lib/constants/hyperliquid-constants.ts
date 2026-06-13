@@ -1,3 +1,13 @@
+/**
+ * Default slippage applied to "market" IOC orders. We submit IOC limits
+ * (Hyperliquid does not have a true market type for L1 actions) priced
+ * `slippage` away from mid in the aggressive direction.
+ */
+export const DEFAULT_SLIPPAGE = 0.005; // 50 bps
+
+/** DEFAULT_SLIPPAGE expressed as a percent (e.g. 0.005 → 0.5). Used as fallback when maxSlippagePct is absent or invalid. */
+export const DEFAULT_SLIPPAGE_PCT = DEFAULT_SLIPPAGE * 100;
+
 export type MarketCatagory = "All" | "Crypto" | "Tradfi";
 
 export interface PerpMarket {

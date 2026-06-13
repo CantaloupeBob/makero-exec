@@ -1,11 +1,5 @@
 import { formatPrice, formatSize } from "@nktkas/hyperliquid/utils";
-
-/**
- * Default slippage applied to "market" IOC orders. We submit IOC limits
- * (Hyperliquid does not have a true market type for L1 actions) priced
- * `slippage` away from mid in the aggressive direction.
- */
-export const DEFAULT_SLIPPAGE = 0.005; // 50 bps
+import { DEFAULT_SLIPPAGE } from "../../../lib/constants/hyperliquid-constants";
 
 /**
  * Compute an aggressive IOC limit price from the current mid. For longs we

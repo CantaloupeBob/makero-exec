@@ -25,13 +25,6 @@ export interface TriggerKey {
   readonly raw: string;
 }
 
-export class TriggerParseError extends Error {
-  constructor(raw: string, reason: string) {
-    super(`Invalid trigger source "${raw}": ${reason}`);
-    this.name = "TriggerParseError";
-  }
-}
-
 const SUPPORTED_PROVIDERS: ReadonlySet<TriggerProvider> = new Set([
   "polymarket",
 ]);
@@ -39,19 +32,18 @@ const SUPPORTED_PROVIDERS: ReadonlySet<TriggerProvider> = new Set([
 export function parseTriggerKey(raw: string): TriggerKey {
   const parts = raw.split(":");
   if (parts.length !== 3) {
-    throw new TriggerParseError(
-      raw,
-      `expected 3 colon-separated parts, got ${parts.length}`,
+    throw new Error(
+      `${raw}\nexpected 3 colon-separated parts, got ${parts.length}`,
     );
   }
   const [providerRaw, slug, conditionId] = parts as [string, string, string];
   const provider = providerRaw.toLowerCase();
   if (!SUPPORTED_PROVIDERS.has(provider as TriggerProvider)) {
-    throw new TriggerParseError(raw, `unsupported provider "${providerRaw}"`);
+    throw new Error(`${raw}\n unsupported provider "${providerRaw}"`);
   }
-  if (!slug) throw new TriggerParseError(raw, "empty slug");
+  if (!slug) throw new Error(`${raw}\n empty slug`);
   if (!conditionId.startsWith("0x")) {
-    throw new TriggerParseError(raw, "conditionId must start with 0x");
+    throw new Error(`${raw}\n conditionId must start with 0x`);
   }
 
   const normalizedConditionId = conditionId.toLowerCase();
@@ -62,12 +54,4 @@ export function parseTriggerKey(raw: string): TriggerKey {
     conditionId: normalizedConditionId,
     raw,
   };
-}
-
-export function tryParseTriggerKey(raw: string): TriggerKey | null {
-  try {
-    return parseTriggerKey(raw);
-  } catch {
-    return null;
-  }
 }

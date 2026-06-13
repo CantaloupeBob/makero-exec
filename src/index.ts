@@ -2,7 +2,7 @@ import { Chain, ClobClient } from "@polymarket/clob-client-v2";
 import { closeDb } from "./db/client.ts";
 import { loadAllTriggerKeys } from "./wss/triggers/repository.ts";
 import {
-  PolymarketTokenResolver,
+  PolymarketMarketResolver,
   WssManager,
   type WssEvent,
   type WssError,
@@ -24,7 +24,6 @@ import {
   PolymarketProbabilityExtractor,
   SdkBookResyncer,
   StrategyEngine,
-  YesTokenResolver,
 } from "./strategy/index.ts";
 import {
   ApiWalletLoader,
@@ -81,15 +80,18 @@ async function main() {
 
   // ---- 2. WSS manager -------------------------------------------------------
   const BOOT_CONSUMER = "bootstrap";
+  // One resolver backs both the WSS subscription (all token ids) and the
+  // strategy engine's probability source (the YES token id), so each market is
+  // fetched from the CLOB once rather than twice.
+  const marketResolver = new PolymarketMarketResolver(clobClient);
   const manager = new WssManager({
-    resolver: new PolymarketTokenResolver(clobClient),
+    resolver: marketResolver,
   });
 
   // ---- 2a. Event bus --------------------------------------------------------
   const bus = new InMemoryEventBus();
 
   // ---- 2b. Strategy engine --------------------------------------------------
-  const yesTokens = new YesTokenResolver(clobClient);
   const bookStore = new BookStore();
   const bookSync = new BookSynchronizer(
     bookStore,
@@ -106,7 +108,7 @@ async function main() {
   const engine = new StrategyEngine({
     bus,
     extractor: new PolymarketProbabilityExtractor(
-      yesTokens,
+      marketResolver,
       {
         // Allow tail-probability triggers (0% / 100%) to fire. At the extremes
         // the YES book becomes one-sided (no bids at 0%, no asks at 100%) and
@@ -163,7 +165,7 @@ async function main() {
   await Promise.all(
     [...triggers.values()].map(async (t) => {
       try {
-        const yesAssetId = await yesTokens.resolve(t);
+        const yesAssetId = await marketResolver.resolveYes(t);
         if (yesAssetId) {
           console.log(
             `[boot] resolved YES token for ${t.slug}: ${yesAssetId} — tracking for warmup`,
@@ -358,7 +360,7 @@ async function main() {
           await Promise.all(
             newStrategies.map(async (s) => {
               try {
-                const yesAssetId = await yesTokens.resolve(s.trigger);
+                const yesAssetId = await marketResolver.resolveYes(s.trigger);
                 if (yesAssetId) {
                   bookSync.track(yesAssetId);
                   triggerYesAssetId.set(s.trigger.id, yesAssetId);

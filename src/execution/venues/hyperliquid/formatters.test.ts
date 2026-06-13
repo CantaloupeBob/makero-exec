@@ -3,8 +3,9 @@ import {
   aggressiveLimitPrice,
   sizeFromUsdcNotional,
   triggerPriceFromPct,
-  DEFAULT_SLIPPAGE,
 } from "./formatters";
+import { DEFAULT_SLIPPAGE } from "../../../lib/constants/hyperliquid-constants";
+
 import { HYPERLIQUID_MARKETS } from "../../../lib/constants/hyperliquid-constants";
 
 // Helper: look up szDecimals for a named market

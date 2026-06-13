@@ -1,6 +1,5 @@
 export * from "./types.ts";
 export * from "./repository.ts";
-export * from "./yes-token-resolver.ts";
 export * from "./book-state.ts";
 export * from "./book-store.ts";
 export * from "./book-synchronizer.ts";

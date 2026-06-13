@@ -2,11 +2,8 @@ import { eq, and, gt } from "drizzle-orm";
 import { getDb } from "../db/client.ts";
 import { orders, strategies } from "../db/schema.ts";
 import type { ExecutableOrder } from "./types.ts";
-import { DEFAULT_SLIPPAGE } from "./venues/hyperliquid/formatters.ts";
+import { DEFAULT_SLIPPAGE_PCT } from "../lib/constants/hyperliquid-constants.ts";
 import { MAX_ORDER_SIZE_USDC } from "../lib/constants/global-constants.ts";
-
-/** DEFAULT_SLIPPAGE expressed as a percent (e.g. 0.005 → 0.5). Used as fallback when maxSlippagePct is absent or invalid. */
-const DEFAULT_SLIPPAGE_PCT = DEFAULT_SLIPPAGE * 100;
 
 /**
  * Hard cap on a single order's USDC notional. Read from the environment so
