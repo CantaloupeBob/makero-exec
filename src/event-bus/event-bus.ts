@@ -58,7 +58,6 @@ export interface WssErrorEvent extends BusEventMeta {
   readonly type: "error";
   readonly triggerId: string;
   readonly trigger: TriggerKey;
-  readonly payload: { readonly message: string; readonly stack?: string };
 }
 
 /**
@@ -211,12 +210,6 @@ export function strategyTopic(strategyId: string, type: string): string {
   return `strategy.${strategyId}.${type}`;
 }
 
-/**
- * Generates a (sufficiently) unique event id. Uses `crypto.randomUUID` when
- * available, falling back to a timestamp+random string.
- */
 export function newEventId(): string {
-  const g = globalThis as { crypto?: { randomUUID?: () => string } };
-  if (g.crypto?.randomUUID) return g.crypto.randomUUID();
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  return crypto.randomUUID();
 }

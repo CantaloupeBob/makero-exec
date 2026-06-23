@@ -163,11 +163,6 @@ export class StrategyEngine {
     const bucket = this.index.get(event.triggerId);
     if (!bucket || bucket.size === 0) return;
 
-    // One throttled log per (trigger, eventType) pair so we can confirm WSS
-    // ticks are actually reaching the engine for the markets we care about,
-    // without spamming on every price_change.
-    this.logTick(event);
-
     const probability = this.extractor.extract(event);
     if (probability === null) return;
 
@@ -200,14 +195,6 @@ export class StrategyEngine {
   }
 
   private readonly lastTickLogAt = new Map<string, number>();
-  private logTick(event: WssMarketEvent): void {
-    const key = `${event.triggerId}:${event.type}`;
-    const now = Date.now();
-    const last = this.lastTickLogAt.get(key) ?? 0;
-    if (now - last < 5000) return;
-    this.lastTickLogAt.set(key, now);
-  }
-
   private readonly lastExpiredSkipLogAt = new Map<string, number>();
   private logExpiredSkip(strategy: LoadedStrategy): void {
     const now = Date.now();

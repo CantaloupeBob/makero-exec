@@ -5,22 +5,6 @@ import type { ExecutableOrder } from "./types.ts";
 import { DEFAULT_SLIPPAGE_PCT } from "../lib/constants/hyperliquid-constants.ts";
 import { MAX_ORDER_SIZE_USDC } from "../lib/constants/global-constants.ts";
 
-/**
- * Hard cap on a single order's USDC notional. Read from the environment so
- * operators can configure it without a code change. Defaults to $10,000.
- * A DB value larger than this is rejected at load time, not at execution time,
- * so the strategy is skipped cleanly rather than attempting a partial batch.
- */
-export const MAX_ORDER_USDC: number = (() => {
-  const raw = MAX_ORDER_SIZE_USDC;
-  if (!raw) return 10_000;
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n <= 0) {
-    throw new Error(`MAX_ORDER_USDC env var "${raw}" is not a positive number`);
-  }
-  return n;
-})();
-
 export interface LoadPendingOrdersResult {
   /** Orders that passed all validation checks and are ready to execute. */
   readonly orders: ExecutableOrder[];
@@ -67,9 +51,9 @@ export async function loadPendingOrdersForStrategy(
       rejectedCount++;
       continue;
     }
-    if (sizeUsdc > MAX_ORDER_USDC) {
+    if (sizeUsdc > MAX_ORDER_SIZE_USDC) {
       console.error(
-        `[exec] order ${row.id} size_usdc=${sizeUsdc} exceeds MAX_ORDER_USDC=${MAX_ORDER_USDC} — skipping`,
+        `[exec] order ${row.id} size_usdc=${sizeUsdc} exceeds MAX_ORDER_SIZE_USDC=${MAX_ORDER_SIZE_USDC} — skipping`,
       );
       rejectedCount++;
       continue;
@@ -132,24 +116,6 @@ export async function markOrderStatus(
   }
 }
 
-/**
- * Mark a strategy as having been attempted by the executor. This is a
- * one-way latch — once true, the row stays true. The intent is to give
- * downstream auditing / re-arm tooling a clear signal that the executor
- * has had its turn at this strategy, regardless of whether individual
- * orders inside it filled, errored, or were skipped.
- *
- * Best-effort: failing to flip the flag is logged but never thrown,
- * because the on-venue side effects have already happened.
- */
-/**
- * Mark a strategy as having been attempted. This MUST succeed before the
- * executor calls the venue — if the DB write fails we throw so the caller
- * aborts rather than executing a trade that cannot be latched, which would
- * result in a double-execution on the next restart.
- *
- * The method is intentionally NOT best-effort.
- */
 /**
  * Mark a strategy as having been attempted. This MUST succeed before the
  * executor calls the venue — if the DB write fails we throw so the caller

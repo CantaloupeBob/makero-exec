@@ -103,7 +103,6 @@ export class BookSynchronizer {
    */
   readonly warmupComplete: Promise<void>;
   private warmupResolve!: () => void;
-  private warmupBaselines = new Set<string>();
   private warmupPending = new Set<string>();
 
   constructor(
@@ -256,11 +255,6 @@ export class BookSynchronizer {
         fresh.hash,
       );
       this.lastResyncAt.set(assetId, Date.now());
-      if (reason !== "periodic") {
-        console.warn(
-          `[book-sync] resynced ${assetId} (${reason}) — bids=${fresh.bids.length} asks=${fresh.asks.length}`,
-        );
-      }
     } catch (err) {
       const elapsedMs = Date.now() - startedAt;
       console.warn(
@@ -273,7 +267,6 @@ export class BookSynchronizer {
       // book is bad when the first tick arrives.
       if (this.warmupPending.size > 0) {
         this.warmupPending.delete(assetId);
-        this.warmupBaselines.add(assetId);
         if (this.warmupPending.size === 0) {
           this.warmupResolve();
         }

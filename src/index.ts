@@ -79,7 +79,6 @@ async function main() {
   });
 
   // ---- 2. WSS manager -------------------------------------------------------
-  const BOOT_CONSUMER = "bootstrap";
   // One resolver backs both the WSS subscription (all token ids) and the
   // strategy engine's probability source (the YES token id), so each market is
   // fetched from the CLOB once rather than twice.
@@ -136,7 +135,7 @@ async function main() {
       console.log(
         `[engine] trigger ${triggerId} has no remaining strategies — closing WSS feed`,
       );
-      manager.removeSubscription(strategy.trigger, BOOT_CONSUMER);
+      manager.removeSubscription(strategy.trigger);
       const yesAssetId = triggerYesAssetId.get(triggerId);
       if (yesAssetId) {
         bookSync.untrack(yesAssetId);
@@ -241,7 +240,7 @@ async function main() {
 
   // ---- 6. Wire WSS → bus bridge and start manager --------------------------
   for (const trigger of triggers.values()) {
-    manager.addSubscription(trigger, BOOT_CONSUMER);
+    manager.addSubscription(trigger);
   }
 
   manager.onEvent((event: WssEvent) => {
@@ -274,7 +273,6 @@ async function main() {
       publishedAt: now,
       triggerId: err.triggerId,
       trigger: err.trigger,
-      payload: { message: err.error.message },
     };
     bus.publish(busEvent);
   });
@@ -376,7 +374,7 @@ async function main() {
                     `${err instanceof Error ? err.message : err}`,
                 );
               }
-              manager.addSubscription(s.trigger, BOOT_CONSUMER);
+              manager.addSubscription(s.trigger);
               announcedStrategyIds.add(s.id);
             }),
           );
@@ -408,7 +406,7 @@ async function main() {
                 `[strategy-poll] trigger ${triggerId} now empty after deletion — ` +
                   `closing WSS feed`,
               );
-              manager.removeSubscription(strategy.trigger, BOOT_CONSUMER);
+              manager.removeSubscription(strategy.trigger);
               const yesAssetId = triggerYesAssetId.get(triggerId);
               if (yesAssetId) {
                 bookSync.untrack(yesAssetId);

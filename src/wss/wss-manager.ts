@@ -17,8 +17,6 @@ import type {
  */
 interface SubscriptionRecord {
   readonly trigger: TriggerKey;
-  /** Set of consumer IDs currently subscribed. Connection lives while non-empty. */
-  readonly consumers: Set<string>;
   /** Lazily created — null while the token-id resolution is in flight or has failed. */
   connection: PolymarketConnection | null;
 }
@@ -92,18 +90,16 @@ export class WssManager {
   // Subscription management
   // ---------------------------------------------------------------------------
 
-  addSubscription(trigger: TriggerKey, consumerId: string): void {
+  addSubscription(trigger: TriggerKey): void {
     if (this.stopped) throw new Error("WssManager has been stopped");
 
     const existing = this.subscriptions.get(trigger.id);
     if (existing) {
-      existing.consumers.add(consumerId);
       return;
     }
 
     const record: SubscriptionRecord = {
       trigger,
-      consumers: new Set([consumerId]),
       connection: null,
     };
     this.subscriptions.set(trigger.id, record);
@@ -114,12 +110,9 @@ export class WssManager {
     }
   }
 
-  removeSubscription(trigger: TriggerKey, consumerId: string): void {
+  removeSubscription(trigger: TriggerKey): void {
     const record = this.subscriptions.get(trigger.id);
     if (!record) return;
-
-    record.consumers.delete(consumerId);
-    if (record.consumers.size > 0) return;
 
     this.subscriptions.delete(trigger.id);
     const conn = record.connection;

@@ -7,9 +7,9 @@ import type {
 import {
   hasStrategyBeenAttempted,
   loadPendingOrdersForStrategy,
+  StrategyAlreadyLatched,
   markOrderStatus,
   markStrategyAttempted,
-  StrategyAlreadyLatched,
 } from "./order-repository.ts";
 import { loadStrategyById } from "../strategy/repository.ts";
 import type { Venue, OrderExecutionResult } from "./types.ts";
